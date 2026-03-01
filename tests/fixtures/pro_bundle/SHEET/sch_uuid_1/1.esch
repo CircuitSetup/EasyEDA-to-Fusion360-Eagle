@@ -1,0 +1,3 @@
+["DOCTYPE","SCH","1.1"]
+["COMPONENT","e1","",0,100,200,0,{"Designator":"R1","Name":"RES","Value":"1k"},0]
+["ATTR","a1","e1","@Page Name","P1",0,0,120,220,0,"st1",0]

@@ -1,0 +1,2 @@
+refdes,source_name,package,value,reason,required_action,attributes
+U1,STM32F030,LQFP-48,MCU,ambiguous_candidates_no_selection,manual_candidate_selection,

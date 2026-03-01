@@ -1,0 +1,35 @@
+{
+  "converted_successfully": true,
+  "converted_with_warnings": true,
+  "lossy_conversions": [
+    "CustomFabLayer"
+  ],
+  "unresolved_parts": [
+    "U1"
+  ],
+  "ambiguous_mappings": [
+    "U1"
+  ],
+  "inferred_schematic_items": [],
+  "manual_review_items": [
+    "Board instance count mismatch: source=2 placed=1",
+    "R1: package 0603 not found in package set",
+    "U1: missing device mapping",
+    "U1: package LQFP-48 not found in package set"
+  ],
+  "metrics": {
+    "component_count": 2,
+    "net_count": 2,
+    "sheet_count": 1,
+    "device_count": 0,
+    "package_count": 0,
+    "layer_count": 5,
+    "board_track_count": 2,
+    "board_via_count": 1,
+    "board_pad_count": 1,
+    "source_component_instance_count": 2,
+    "placed_component_instance_count": 1,
+    "recognized_power_ground_nets": 2,
+    "inserted_supply_symbols": 0
+  }
+}

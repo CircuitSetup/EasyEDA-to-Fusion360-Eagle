@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<eagle version="9.6.2">
+  <drawing>
+    <library>
+      <packages>
+        <package name="R0603" />
+      </packages>
+      <symbols>
+        <symbol name="R" />
+      </symbols>
+      <devicesets>
+        <deviceset name="R">
+          <gates>
+            <gate name="G$1" symbol="R" x="0" y="0" />
+          </gates>
+          <devices>
+            <device name="0603" package="R0603">
+              <connects>
+                <connect gate="G$1" pin="1" pad="1" />
+                <connect gate="G$1" pin="2" pad="2" />
+              </connects>
+              <technologies>
+                <technology name="" />
+              </technologies>
+            </device>
+          </devices>
+        </deviceset>
+      </devicesets>
+    </library>
+  </drawing>
+</eagle>

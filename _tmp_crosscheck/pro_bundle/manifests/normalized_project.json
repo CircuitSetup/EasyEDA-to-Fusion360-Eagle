@@ -1,0 +1,482 @@
+{
+  "project_id": "project",
+  "name": "BundleProject",
+  "source_format": "easyeda_pro",
+  "input_files": [
+    "C:\\Users\\John\\Documents\\EasyEDA-to-Fusion360-Eagle\\tests\\fixtures\\pro_bundle\\project.json"
+  ],
+  "sheets": [
+    {
+      "sheet_id": "bundleschematic_p1",
+      "name": "BundleSchematic:P1",
+      "components": [
+        "R1"
+      ],
+      "wires": [],
+      "labels": [],
+      "ports": [],
+      "junctions": [],
+      "no_connects": [],
+      "annotations": [
+        {
+          "text": "P1",
+          "at": {
+            "x_mm": 3.048,
+            "y_mm": 5.588
+          },
+          "layer": "schematic_text",
+          "size_mm": 0.030479999999999997,
+          "rotation_deg": 0.0,
+          "mirrored": false
+        }
+      ]
+    }
+  ],
+  "components": [
+    {
+      "refdes": "R1",
+      "value": "1k",
+      "source_name": "RES",
+      "source_instance_id": "e1",
+      "symbol_id": null,
+      "package_id": null,
+      "device_id": null,
+      "manufacturer": null,
+      "mpn": null,
+      "attributes": {
+        "Designator": "R1",
+        "Name": "RES",
+        "Value": "1k"
+      },
+      "at": {
+        "x_mm": 2.54,
+        "y_mm": 5.08
+      },
+      "rotation_deg": 0.0,
+      "side": "top",
+      "sheet_id": "bundleschematic_p1"
+    },
+    {
+      "refdes": "R1",
+      "value": "1k",
+      "source_name": "RES",
+      "source_instance_id": "c1",
+      "symbol_id": null,
+      "package_id": "0603",
+      "device_id": "SparkFun-Resistors:RESISTOR0603",
+      "manufacturer": null,
+      "mpn": null,
+      "attributes": {
+        "Name": "RES",
+        "Value": "1k",
+        "Designator": "R1",
+        "Footprint": "0603"
+      },
+      "at": {
+        "x_mm": 25.4,
+        "y_mm": 50.8
+      },
+      "rotation_deg": 0.0,
+      "side": "top",
+      "sheet_id": null
+    }
+  ],
+  "symbols": [],
+  "packages": [],
+  "devices": [],
+  "nets": [
+    {
+      "name": "N1",
+      "nodes": [
+        {
+          "refdes": "R1",
+          "pin": "1"
+        }
+      ]
+    }
+  ],
+  "board": {
+    "layers": [
+      {
+        "source_id": "1",
+        "source_name": "Top Layer",
+        "family": "easyeda_pro",
+        "mapped_name": "top_copper",
+        "category": "electrical",
+        "copper_index": 1,
+        "lossy": false
+      },
+      {
+        "source_id": "11",
+        "source_name": "Board Outline Layer",
+        "family": "easyeda_pro",
+        "mapped_name": "dimension",
+        "category": "mechanical",
+        "copper_index": null,
+        "lossy": false
+      }
+    ],
+    "outline": [
+      {
+        "region_id": "o1",
+        "layer": "11",
+        "points": [
+          {
+            "x_mm": 0.0,
+            "y_mm": 0.0
+          },
+          {
+            "x_mm": 50.8,
+            "y_mm": 0.0
+          },
+          {
+            "x_mm": 50.8,
+            "y_mm": 25.4
+          },
+          {
+            "x_mm": 0.0,
+            "y_mm": 25.4
+          },
+          {
+            "x_mm": 0.0,
+            "y_mm": 0.0
+          }
+        ],
+        "net": null,
+        "kind": "outline"
+      }
+    ],
+    "cutouts": [],
+    "tracks": [
+      {
+        "start": {
+          "x_mm": 22.86,
+          "y_mm": 50.8
+        },
+        "end": {
+          "x_mm": 27.939999999999998,
+          "y_mm": 50.8
+        },
+        "width_mm": 0.254,
+        "layer": "1",
+        "net": "N1"
+      }
+    ],
+    "vias": [
+      {
+        "at": {
+          "x_mm": 25.4,
+          "y_mm": 50.8
+        },
+        "drill_mm": 0.30479999999999996,
+        "diameter_mm": 0.6095999999999999,
+        "net": "N1",
+        "start_layer": "top_copper",
+        "end_layer": "bottom_copper"
+      }
+    ],
+    "pads": [
+      {
+        "pad_number": "1",
+        "at": {
+          "x_mm": 25.4,
+          "y_mm": 50.8
+        },
+        "shape": "rect",
+        "width_mm": 1.016,
+        "height_mm": 0.508,
+        "drill_mm": null,
+        "layer": "1",
+        "rotation_deg": 0.0,
+        "net": "N1"
+      }
+    ],
+    "arcs": [],
+    "regions": [],
+    "keepouts": [],
+    "mechanical": [],
+    "text": [
+      {
+        "text": "R1",
+        "at": {
+          "x_mm": 24.13,
+          "y_mm": 52.07
+        },
+        "layer": "3",
+        "size_mm": 0.9999979999999999,
+        "rotation_deg": 0.0,
+        "mirrored": false
+      }
+    ],
+    "holes": [],
+    "attributes": {}
+  },
+  "layers": [
+    {
+      "source_id": "1",
+      "source_name": "Top Layer",
+      "family": "easyeda_pro",
+      "mapped_name": "top_copper",
+      "category": "electrical",
+      "copper_index": 1,
+      "lossy": false
+    },
+    {
+      "source_id": "11",
+      "source_name": "Board Outline Layer",
+      "family": "easyeda_pro",
+      "mapped_name": "dimension",
+      "category": "mechanical",
+      "copper_index": null,
+      "lossy": false
+    }
+  ],
+  "rules": [],
+  "attributes": {},
+  "metadata": {
+    "projectName": "BundleProject",
+    "name": "BundleProject",
+    "unit": "mil",
+    "coordinate_scale_to_mm": 0.0254,
+    "footprint_id_to_title": {},
+    "device_id_to_footprint": {},
+    "device_title_to_footprint": {},
+    "designator_prefix_to_footprint": {},
+    "device_id_to_symbol_id": {},
+    "device_name_to_symbol_id": {},
+    "symbol_defs": {},
+    "footprint_packages": [],
+    "display_unit": "mm"
+  },
+  "events": [
+    {
+      "severity": "warning",
+      "code": "AMBIGUOUS_PART_REQUIRES_SELECTION",
+      "message": "Ambiguous library candidates for R1",
+      "context": {
+        "refdes": "R1",
+        "candidates": [
+          "1-2176053-4",
+          "7-2176230-8",
+          "2-1623789-1",
+          "9-1879208-7",
+          "1630019-1",
+          "RC0603JR-070RL",
+          "CRCW08050000Z0EA",
+          "RC0402JR-070RL",
+          "CAY16-221J4LF",
+          "MCS1632R050FER",
+          "WSLP1206R0500FEA",
+          "ERJ-8GEY0R00V",
+          "RESISTOR-POWER_RAC03",
+          "RESISTOR-ARRAY_742-8NS",
+          "RESONATORSMD",
+          "RCHIP-0402(1005-METRIC)",
+          "RCHIP-0603(1608-METRIC)",
+          "RCHIP-0805(2012-METRIC)",
+          "RCHIP-1206(3216-METRIC)",
+          "RCHIP-1210(3225-METRIC)",
+          "RCHIP-2010(5025-METRIC)",
+          "RCHIP-2512(6332-METRIC)",
+          "RAXIAL-11.7MM-PITCH",
+          "RMELF(3515-METRIC)",
+          "RMELF(2014-METRIC)",
+          "RMELF(5924-METRIC)",
+          "RMELF(3218-METRIC)",
+          "RAXIAL-7.2MM-PITCH",
+          "R-USCHIP-0402(1005-METRIC)",
+          "R-USCHIP-0603(1608-METRIC)",
+          "R-USCHIP-0805(2012-METRIC)",
+          "R-USCHIP-1206(3216-METRIC)",
+          "R-USCHIP-1210(3225-METRIC)",
+          "R-USCHIP-2010(5025-METRIC)",
+          "R-USCHIP-2512(6332-METRIC)",
+          "R-USAXIAL-11.7MM-PITCH",
+          "R-USMELF(3515-METRIC)",
+          "R-USMELF(2014-METRIC)",
+          "R-USMELF(5924-METRIC)",
+          "R-USMELF(3218-METRIC)",
+          "R-USAXIAL-7.2MM-PITCH",
+          "R-USCHIP-0402(1005-METRIC)",
+          "R-USCHIP-0603(1608-METRIC)",
+          "R-USCHIP-0805(2012-METRIC)",
+          "R-USCHIP-1206(3216-METRIC)",
+          "R-USCHIP-1210(3225-METRIC)",
+          "R-USCHIP-2010(5025-METRIC)",
+          "R-USCHIP-2512(6332-METRIC)",
+          "R-USAXIAL-11.7MM-PITCH",
+          "R-USMELF(3515-METRIC)",
+          "R-USMELF(2014-METRIC)",
+          "R-USMELF(5924-METRIC)",
+          "R-USMELF(3218-METRIC)",
+          "R-USAXIAL-7.2MM-PITCH",
+          "RX-8035LC:B3PURESN",
+          "RESISTOR-ARRAY_742-8NS",
+          "RESISTOR-POWER_RAC03",
+          "RESISTOR-BACKUP_CHIP-0402(1005-METRIC)",
+          "RESISTOR-BACKUP_CHIP-0603(1608-METRIC)",
+          "RESISTOR-BACKUP_CHIP-0805(2012-METRIC)",
+          "RESISTOR-BACKUP_CHIP-1206(3216-METRIC)",
+          "RESISTOR-BACKUP_CHIP-1210(3225-METRIC)",
+          "RESISTOR-BACKUP_CHIP-2010(5025-METRIC)",
+          "RESISTOR-BACKUP_CHIP-2512(6332-METRIC)",
+          "RESISTOR-BACKUP_AXIAL-11.7MM-PITCH",
+          "RESISTOR-BACKUP_MELF(3515-METRIC)",
+          "RESISTOR-BACKUP_MELF(2014-METRIC)",
+          "RESISTOR-BACKUPMELF(5924-METRIC)",
+          "RESISTOR-BACKUP_MELF(3218-METRIC)",
+          "RESISTOR-BACKUP_AXIAL-7.2MM-PITCH",
+          "RESISTOR-BACKUP_AXIAL-10.16MM-PITCH",
+          "RESISTOR_CHIP-0402(1005-METRIC)",
+          "RESISTOR_CHIP-0603(1608-METRIC)",
+          "RESISTOR_CHIP-0805(2012-METRIC)",
+          "RESISTOR_CHIP-1206(3216-METRIC)",
+          "RESISTOR_CHIP-1210(3225-METRIC)",
+          "RESISTOR_CHIP-2010(5025-METRIC)",
+          "RESISTOR_CHIP-2512(6332-METRIC)",
+          "RESISTOR_AXIAL-11.7MM-PITCH",
+          "RESISTOR_MELF(3515-METRIC)",
+          "RESISTOR_MELF(2014-METRIC)",
+          "RESISTORMELF(5924-METRIC)",
+          "RESISTOR_MELF(3218-METRIC)",
+          "RESISTOR_AXIAL-7.2MM-PITCH",
+          "RESISTOR_AXIAL-10.16MM-PITCH",
+          "RES720-SMD",
+          "RES-SMT360-SMD",
+          "GESTURESENSE_LOGOSTEXT",
+          "GESTURESENSE_LOGOSNOTEXT",
+          "RESONATOR-4MHZSMD-4.5X2",
+          "RESONATOR-16MHZSMD_3.2X1.3",
+          "RESONATOR-8MHZSMD_3.2X1.3",
+          "RESONATORPTH-7.6X3.8",
+          "RESONATORSMD-3.2X1.3",
+          "RESONATORSMD-4.5X2.0",
+          "RESONATORSMD-7.4X3.4",
+          "RESISTOR0402",
+          "GHI-BASICCOMPONENTS_FB-(INCH)-0805"
+        ]
+      }
+    }
+  ],
+  "library_matches": [
+    {
+      "refdes": "R1",
+      "stage": "stage3_ambiguity_resolution",
+      "matched": false,
+      "target_device": null,
+      "target_package": null,
+      "reason": "ambiguous_candidates_no_selection",
+      "candidates": [
+        "1-2176053-4",
+        "7-2176230-8",
+        "2-1623789-1",
+        "9-1879208-7",
+        "1630019-1",
+        "RC0603JR-070RL",
+        "CRCW08050000Z0EA",
+        "RC0402JR-070RL",
+        "CAY16-221J4LF",
+        "MCS1632R050FER",
+        "WSLP1206R0500FEA",
+        "ERJ-8GEY0R00V",
+        "RESISTOR-POWER_RAC03",
+        "RESISTOR-ARRAY_742-8NS",
+        "RESONATORSMD",
+        "RCHIP-0402(1005-METRIC)",
+        "RCHIP-0603(1608-METRIC)",
+        "RCHIP-0805(2012-METRIC)",
+        "RCHIP-1206(3216-METRIC)",
+        "RCHIP-1210(3225-METRIC)",
+        "RCHIP-2010(5025-METRIC)",
+        "RCHIP-2512(6332-METRIC)",
+        "RAXIAL-11.7MM-PITCH",
+        "RMELF(3515-METRIC)",
+        "RMELF(2014-METRIC)",
+        "RMELF(5924-METRIC)",
+        "RMELF(3218-METRIC)",
+        "RAXIAL-7.2MM-PITCH",
+        "R-USCHIP-0402(1005-METRIC)",
+        "R-USCHIP-0603(1608-METRIC)",
+        "R-USCHIP-0805(2012-METRIC)",
+        "R-USCHIP-1206(3216-METRIC)",
+        "R-USCHIP-1210(3225-METRIC)",
+        "R-USCHIP-2010(5025-METRIC)",
+        "R-USCHIP-2512(6332-METRIC)",
+        "R-USAXIAL-11.7MM-PITCH",
+        "R-USMELF(3515-METRIC)",
+        "R-USMELF(2014-METRIC)",
+        "R-USMELF(5924-METRIC)",
+        "R-USMELF(3218-METRIC)",
+        "R-USAXIAL-7.2MM-PITCH",
+        "R-USCHIP-0402(1005-METRIC)",
+        "R-USCHIP-0603(1608-METRIC)",
+        "R-USCHIP-0805(2012-METRIC)",
+        "R-USCHIP-1206(3216-METRIC)",
+        "R-USCHIP-1210(3225-METRIC)",
+        "R-USCHIP-2010(5025-METRIC)",
+        "R-USCHIP-2512(6332-METRIC)",
+        "R-USAXIAL-11.7MM-PITCH",
+        "R-USMELF(3515-METRIC)",
+        "R-USMELF(2014-METRIC)",
+        "R-USMELF(5924-METRIC)",
+        "R-USMELF(3218-METRIC)",
+        "R-USAXIAL-7.2MM-PITCH",
+        "RX-8035LC:B3PURESN",
+        "RESISTOR-ARRAY_742-8NS",
+        "RESISTOR-POWER_RAC03",
+        "RESISTOR-BACKUP_CHIP-0402(1005-METRIC)",
+        "RESISTOR-BACKUP_CHIP-0603(1608-METRIC)",
+        "RESISTOR-BACKUP_CHIP-0805(2012-METRIC)",
+        "RESISTOR-BACKUP_CHIP-1206(3216-METRIC)",
+        "RESISTOR-BACKUP_CHIP-1210(3225-METRIC)",
+        "RESISTOR-BACKUP_CHIP-2010(5025-METRIC)",
+        "RESISTOR-BACKUP_CHIP-2512(6332-METRIC)",
+        "RESISTOR-BACKUP_AXIAL-11.7MM-PITCH",
+        "RESISTOR-BACKUP_MELF(3515-METRIC)",
+        "RESISTOR-BACKUP_MELF(2014-METRIC)",
+        "RESISTOR-BACKUPMELF(5924-METRIC)",
+        "RESISTOR-BACKUP_MELF(3218-METRIC)",
+        "RESISTOR-BACKUP_AXIAL-7.2MM-PITCH",
+        "RESISTOR-BACKUP_AXIAL-10.16MM-PITCH",
+        "RESISTOR_CHIP-0402(1005-METRIC)",
+        "RESISTOR_CHIP-0603(1608-METRIC)",
+        "RESISTOR_CHIP-0805(2012-METRIC)",
+        "RESISTOR_CHIP-1206(3216-METRIC)",
+        "RESISTOR_CHIP-1210(3225-METRIC)",
+        "RESISTOR_CHIP-2010(5025-METRIC)",
+        "RESISTOR_CHIP-2512(6332-METRIC)",
+        "RESISTOR_AXIAL-11.7MM-PITCH",
+        "RESISTOR_MELF(3515-METRIC)",
+        "RESISTOR_MELF(2014-METRIC)",
+        "RESISTORMELF(5924-METRIC)",
+        "RESISTOR_MELF(3218-METRIC)",
+        "RESISTOR_AXIAL-7.2MM-PITCH",
+        "RESISTOR_AXIAL-10.16MM-PITCH",
+        "RES720-SMD",
+        "RES-SMT360-SMD",
+        "GESTURESENSE_LOGOSTEXT",
+        "GESTURESENSE_LOGOSNOTEXT",
+        "RESONATOR-4MHZSMD-4.5X2",
+        "RESONATOR-16MHZSMD_3.2X1.3",
+        "RESONATOR-8MHZSMD_3.2X1.3",
+        "RESONATORPTH-7.6X3.8",
+        "RESONATORSMD-3.2X1.3",
+        "RESONATORSMD-4.5X2.0",
+        "RESONATORSMD-7.4X3.4",
+        "RESISTOR0402",
+        "GHI-BASICCOMPONENTS_FB-(INCH)-0805"
+      ],
+      "created_new_part": false
+    },
+    {
+      "refdes": "R1",
+      "stage": "stage2_package_class_passive_external",
+      "matched": true,
+      "target_device": "SparkFun-Resistors:RESISTOR0603",
+      "target_package": "0603",
+      "reason": null,
+      "candidates": [],
+      "created_new_part": false
+    }
+  ]
+}

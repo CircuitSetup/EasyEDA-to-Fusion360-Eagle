@@ -1,0 +1,18 @@
+{
+  "count": 1,
+  "parts": [
+    {
+      "refdes": "R1",
+      "source_name": "RES",
+      "package": null,
+      "value": "1k",
+      "attributes": {
+        "Designator": "R1",
+        "Name": "RES",
+        "Value": "1k"
+      },
+      "reason": "ambiguous_candidates_no_selection",
+      "required_action": "manual_candidate_selection"
+    }
+  ]
+}

@@ -1,0 +1,270 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+import math
+
+from easyeda2fusion.builders.board_reconstruction import _build_track_net_aliases
+from easyeda2fusion.model import Net, NetNode, Package, Point, Project, Side, SchematicSheet, Severity, project_event
+
+
+@dataclass
+class SchematicInferenceReport:
+    inferred: bool = False
+    inferred_nets: list[str] = field(default_factory=list)
+    ambiguous_pin_mappings: list[str] = field(default_factory=list)
+    uncertain_components: list[str] = field(default_factory=list)
+    manual_review_items: list[str] = field(default_factory=list)
+
+
+def infer_schematic_from_board(project: Project, force: bool = False) -> SchematicInferenceReport:
+    report = SchematicInferenceReport(inferred=False)
+    if project.board is None:
+        report.manual_review_items.append("No board data available for inference")
+        return report
+
+    if project.sheets and not force:
+        # Source schematic exists; keep logical intent authoritative.
+        return report
+
+    inferred_sheet = SchematicSheet(sheet_id="inferred_sheet_1", name="INFERRED_FROM_BOARD")
+    inferred_sheet.components = [
+        component.refdes
+        for component in project.components
+        if _is_meaningful_refdes(component.refdes)
+    ]
+    project.sheets.append(inferred_sheet)
+    report.inferred = True
+
+    board = project.board
+    net_alias = _build_track_net_aliases(board.tracks, board.vias)
+    inferred_nodes = _infer_board_pin_nodes(project, net_alias)
+
+    # Include named copper features even when no pin-node mapping could be inferred.
+    named_board_nets = {
+        _canonical_net_name(track.net, net_alias)
+        for track in board.tracks
+        if str(track.net or "").strip()
+    }
+    named_board_nets.update(
+        _canonical_net_name(via.net, net_alias)
+        for via in board.vias
+        if str(via.net or "").strip()
+    )
+    named_board_nets.update(
+        _canonical_net_name(region.net, net_alias)
+        for region in board.regions
+        if str(region.net or "").strip()
+    )
+    named_board_nets = {name for name in named_board_nets if name}
+
+    existing_lookup: dict[str, Net] = {}
+    for net in project.nets:
+        canonical = _canonical_net_name(net.name, net_alias)
+        if not canonical:
+            continue
+        if not net.name:
+            net.name = canonical
+        elif net.name != canonical:
+            net.name = canonical
+        existing_lookup.setdefault(canonical, net)
+
+    for net_name, nodes in sorted(inferred_nodes.items()):
+        target = existing_lookup.get(net_name)
+        if target is None:
+            target = Net(name=net_name, nodes=[])
+            project.nets.append(target)
+            existing_lookup[net_name] = target
+            report.inferred_nets.append(net_name)
+
+        seen = {(node.refdes, node.pin) for node in target.nodes}
+        for node in nodes:
+            key = (node.refdes, node.pin)
+            if key in seen:
+                continue
+            target.nodes.append(node)
+            seen.add(key)
+
+    for net_name in sorted(named_board_nets):
+        if net_name in existing_lookup:
+            continue
+        project.nets.append(Net(name=net_name, nodes=[]))
+        existing_lookup[net_name] = project.nets[-1]
+        report.inferred_nets.append(net_name)
+
+    for component in project.components:
+        if not _is_meaningful_refdes(component.refdes):
+            continue
+        if not component.symbol_id:
+            report.uncertain_components.append(component.refdes)
+        if not component.package_id:
+            report.manual_review_items.append(
+                f"{component.refdes}: package missing for inferred schematic context"
+            )
+
+    if report.inferred_nets:
+        project.events.append(
+            project_event(
+                Severity.WARNING,
+                "SCHEMATIC_INFERRED_FROM_BOARD",
+                "Schematic reconstructed from PCB connectivity; review inferred nets and mappings",
+                {
+                    "inferred_nets": report.inferred_nets,
+                    "uncertain_components": report.uncertain_components,
+                },
+            )
+        )
+
+    if not project.nets:
+        report.manual_review_items.append("No named nets found; board traces may be unlabeled")
+
+    # Explicitly flag that logical pin connectivity could not be guaranteed.
+    report.ambiguous_pin_mappings.extend(
+        f"{component.refdes}: pin-to-net mapping could not be fully inferred"
+        for component in project.components
+        if _is_meaningful_refdes(component.refdes)
+    )
+    return report
+
+
+def _is_meaningful_refdes(refdes: str) -> bool:
+    text = str(refdes or "").strip()
+    if not text:
+        return False
+    return not (text.startswith("e") and text[1:].isdigit())
+
+
+def _canonical_net_name(name: str | None, net_alias: dict[str, str]) -> str:
+    raw = str(name or "").strip()
+    if not raw:
+        return ""
+    return net_alias.get(raw, raw)
+
+
+def _infer_board_pin_nodes(project: Project, net_alias: dict[str, str]) -> dict[str, list[NetNode]]:
+    if project.board is None:
+        return {}
+
+    board = project.board
+    package_lookup: dict[str, Package] = {}
+    for package in project.packages:
+        package_lookup[package.package_id] = package
+        package_lookup[package.name] = package
+
+    board_pads = [pad for pad in board.pads if str(pad.net or "").strip()]
+    board_vias = [via for via in board.vias if str(via.net or "").strip()]
+    board_tracks = [
+        track
+        for track in board.tracks
+        if str(track.net or "").strip()
+    ]
+
+    inferred: dict[str, list[NetNode]] = {}
+    seen_nodes: set[tuple[str, str, str]] = set()
+
+    for component in project.components:
+        refdes = str(component.refdes or "").strip()
+        if not refdes:
+            continue
+
+        package_id = str(component.package_id or "").strip()
+        if not package_id:
+            continue
+        package = package_lookup.get(package_id)
+        if package is None:
+            continue
+
+        for pad in package.pads:
+            pad_number = str(pad.pad_number or "").strip()
+            if not pad_number:
+                continue
+            world = _component_pad_world_point(component, pad.at)
+            net_name = _closest_board_net(world, board_pads, board_vias, board_tracks, net_alias)
+            if not net_name:
+                continue
+            dedupe_key = (net_name, refdes, pad_number)
+            if dedupe_key in seen_nodes:
+                continue
+            seen_nodes.add(dedupe_key)
+            inferred.setdefault(net_name, []).append(NetNode(refdes=refdes, pin=pad_number))
+
+    return inferred
+
+
+def _component_pad_world_point(component, pad_point: Point) -> Point:
+    px = float(pad_point.x_mm)
+    py = float(pad_point.y_mm)
+    if component.side == Side.BOTTOM:
+        px = -px
+    angle = math.radians(float(component.rotation_deg or 0.0))
+    cos_a = math.cos(angle)
+    sin_a = math.sin(angle)
+    rx = px * cos_a - py * sin_a
+    ry = px * sin_a + py * cos_a
+    return Point(
+        x_mm=float(component.at.x_mm) + rx,
+        y_mm=float(component.at.y_mm) + ry,
+    )
+
+
+def _closest_board_net(world: Point, board_pads, board_vias, board_tracks, net_alias: dict[str, str]) -> str:
+    x = float(world.x_mm)
+    y = float(world.y_mm)
+
+    pad_tol = 0.30
+    via_tol = 0.30
+    track_tol = 0.20
+
+    best_pad: tuple[float, str] | None = None
+    for pad in board_pads:
+        pad_net = _canonical_net_name(pad.net, net_alias)
+        if not pad_net:
+            continue
+        dist = math.hypot(x - float(pad.at.x_mm), y - float(pad.at.y_mm))
+        if dist <= pad_tol and (best_pad is None or dist < best_pad[0]):
+            best_pad = (dist, pad_net)
+    if best_pad is not None:
+        return best_pad[1]
+
+    best_via: tuple[float, str] | None = None
+    for via in board_vias:
+        via_net = _canonical_net_name(via.net, net_alias)
+        if not via_net:
+            continue
+        dist = math.hypot(x - float(via.at.x_mm), y - float(via.at.y_mm))
+        if dist <= via_tol and (best_via is None or dist < best_via[0]):
+            best_via = (dist, via_net)
+    if best_via is not None:
+        return best_via[1]
+
+    best_track: tuple[float, str] | None = None
+    for track in board_tracks:
+        track_net = _canonical_net_name(track.net, net_alias)
+        if not track_net:
+            continue
+        distance = _distance_point_to_segment(
+            x,
+            y,
+            float(track.start.x_mm),
+            float(track.start.y_mm),
+            float(track.end.x_mm),
+            float(track.end.y_mm),
+        )
+        if distance <= track_tol and (best_track is None or distance < best_track[0]):
+            best_track = (distance, track_net)
+    if best_track is not None:
+        return best_track[1]
+
+    return ""
+
+
+def _distance_point_to_segment(px: float, py: float, x1: float, y1: float, x2: float, y2: float) -> float:
+    dx = x2 - x1
+    dy = y2 - y1
+    if abs(dx) < 1e-12 and abs(dy) < 1e-12:
+        return math.hypot(px - x1, py - y1)
+
+    t = ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)
+    t = max(0.0, min(1.0, t))
+    proj_x = x1 + t * dx
+    proj_y = y1 + t * dy
+    return math.hypot(px - proj_x, py - proj_y)

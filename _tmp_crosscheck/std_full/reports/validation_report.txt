@@ -1,0 +1,30 @@
+Validation Report
+
+converted_successfully: True
+converted_with_warnings: True
+lossy_conversions: 1
+unresolved_parts: 1
+ambiguous_mappings: 1
+inferred_schematic_items: 0
+manual_review_items: 4
+
+Metrics:
+- board_pad_count: 1
+- board_track_count: 2
+- board_via_count: 1
+- component_count: 2
+- device_count: 0
+- inserted_supply_symbols: 0
+- layer_count: 5
+- net_count: 2
+- package_count: 0
+- placed_component_instance_count: 1
+- recognized_power_ground_nets: 2
+- sheet_count: 1
+- source_component_instance_count: 2
+
+Manual Review Items:
+- Board instance count mismatch: source=2 placed=1
+- R1: package 0603 not found in package set
+- U1: missing device mapping
+- U1: package LQFP-48 not found in package set

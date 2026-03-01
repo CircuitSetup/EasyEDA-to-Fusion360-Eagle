@@ -1,0 +1,12 @@
+Conversion Summary
+
+detected_source_type: easyeda_std
+conversion_mode: full
+schematic_status: converted
+board_status: converted
+parts_auto_matched: 1
+parts_requiring_user_input: 1
+new_library_parts_created: 0
+unresolved_parts: 1
+major_warnings: 3
+converted_with_warnings: True

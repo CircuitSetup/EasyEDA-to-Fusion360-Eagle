@@ -1,0 +1,22 @@
+{
+  "source_format": "easyeda_pro",
+  "input_files": [
+    "C:\\Users\\John\\Documents\\EasyEDA-to-Fusion360-Eagle\\tests\\fixtures\\pro_bundle\\project.json"
+  ],
+  "metadata": {
+    "projectName": "BundleProject",
+    "name": "BundleProject",
+    "unit": "mil",
+    "coordinate_scale_to_mm": 0.0254,
+    "footprint_id_to_title": {},
+    "device_id_to_footprint": {},
+    "device_title_to_footprint": {},
+    "designator_prefix_to_footprint": {},
+    "device_id_to_symbol_id": {},
+    "device_name_to_symbol_id": {},
+    "symbol_defs": {},
+    "footprint_packages": [],
+    "display_unit": "mm"
+  },
+  "events": []
+}

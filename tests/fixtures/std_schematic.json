@@ -1,0 +1,22 @@
+{
+  "format": "easyeda_std",
+  "meta": {
+    "name": "StdSchematicOnly",
+    "unit": "mil",
+    "coordinate_scale_to_mm": 0.254
+  },
+  "layers": [
+    {"id": "1", "name": "TopLayer"},
+    {"id": "2", "name": "BottomLayer"},
+    {"id": "10", "name": "BoardOutline"}
+  ],
+  "schematic": {
+    "name": "Main",
+    "objects": [
+      {"type": "component", "refdes": "R1", "value": "10k", "source_name": "RES_10K", "package": "0603", "mpn": "RC0603FR-0710KL", "x": 100, "y": 100},
+      {"type": "component", "refdes": "C1", "value": "100n", "source_name": "CAP_100N", "package": "0603", "x": 130, "y": 100},
+      {"type": "net", "name": "GND", "nodes": [{"refdes": "R1", "pin": "1"}, {"refdes": "C1", "pin": "1"}]},
+      {"type": "text", "text": "STD schem", "x": 90, "y": 80}
+    ]
+  }
+}

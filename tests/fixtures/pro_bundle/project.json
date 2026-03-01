@@ -1,0 +1,15 @@
+{
+  "schematics": {
+    "sch_uuid_1": {
+      "name": "BundleSchematic",
+      "sheets": [
+        {"name": "P1", "id": 1}
+      ]
+    }
+  },
+  "pcbs": {
+    "pcb_uuid_1": "BundleBoard"
+  },
+  "panels": {},
+  "symbols": {}
+}

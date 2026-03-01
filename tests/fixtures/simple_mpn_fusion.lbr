@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<eagle version="9.6.2">
+  <drawing>
+    <library>
+      <packages>
+        <package name="LQFP48" />
+      </packages>
+      <symbols>
+        <symbol name="STM32F030K6T6" />
+      </symbols>
+      <devicesets>
+        <deviceset name="STM32F030K6T6">
+          <gates>
+            <gate name="G$1" symbol="STM32F030K6T6" x="0" y="0" />
+          </gates>
+          <devices>
+            <device name="" package="LQFP48">
+              <technologies>
+                <technology name="">
+                  <attribute name="MPN" value="STM32F030K6T6" constant="no" />
+                </technology>
+              </technologies>
+            </device>
+          </devices>
+        </deviceset>
+      </devicesets>
+    </library>
+  </drawing>
+</eagle>

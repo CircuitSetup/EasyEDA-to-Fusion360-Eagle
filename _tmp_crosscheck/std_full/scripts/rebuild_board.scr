@@ -1,0 +1,19 @@
+SET CONFIRM OFF;
+SET Warning.PartHasNoUserDefinableValue 0;
+SET Warning.PartNoUserDefinableValueAssigned 0;
+USE 'C:/Users/John/Documents/EasyEDA-to-Fusion360-Eagle/_tmp_crosscheck/std_full/library/easyeda_generated.lbr';
+USE 'C:/Users/John/AppData/Local/Autodesk/Autodesk Fusion 360/Electron/lbr/adsk.eagle_library_532/SparkFun-Resistors.lbr';
+
+GRID MM 0.05 ON;
+SET WIRE_BEND 2;
+ROTATE =R0 R1;
+MOVE R1 (25.4000 30.4800);
+LAYER 1;
+WIRE 'GND' 0.5080 (5.0800 5.0800) (15.2400 5.0800);
+WIRE 'VCC' 0.5080 (5.0800 7.6200) (15.2400 7.6200);
+CHANGE DRILL 0.3048;
+VIA 'GND' 0.6096 round (15.2400 5.0800);
+LAYER 21;
+CHANGE SIZE 0.3048;
+TEXT 'R1' (10.1600 10.1600) R0;
+RATSNEST;

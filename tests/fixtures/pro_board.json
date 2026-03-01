@@ -1,0 +1,27 @@
+{
+  "format": "easyeda_pro",
+  "project": {
+    "name": "ProBoardOnly"
+  },
+  "settings": {
+    "unit": "mm"
+  },
+  "layers": [
+    {"layerId": "TopLayer", "name": "TopLayer"},
+    {"layerId": "InnerLayer1", "name": "InnerLayer1"},
+    {"layerId": "BottomLayer", "name": "BottomLayer"},
+    {"layerId": "BoardOutlineLayer", "name": "BoardOutlineLayer"}
+  ],
+  "documents": [
+    {
+      "type": "pcb",
+      "name": "Board1",
+      "objects": [
+        {"type": "outline", "layer": "BoardOutlineLayer", "points": [[0, 0], [50, 0], [50, 40], [0, 40]]},
+        {"type": "track", "x1": 5, "y1": 5, "x2": 20, "y2": 5, "width": 0.2, "layer": "TopLayer", "net": "GND"},
+        {"type": "track", "x1": 20, "y1": 5, "x2": 20, "y2": 20, "width": 0.2, "layer": "InnerLayer1", "net": "GND"},
+        {"type": "via", "x": 20, "y": 5, "drill": 0.3, "diameter": 0.6, "net": "GND"}
+      ]
+    }
+  ]
+}

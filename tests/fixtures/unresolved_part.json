@@ -1,0 +1,14 @@
+{
+  "format": "easyeda_std",
+  "meta": {
+    "name": "UnresolvedPart",
+    "unit": "mil",
+    "coordinate_scale_to_mm": 0.254
+  },
+  "schematic": {
+    "name": "Main",
+    "objects": [
+      {"type": "component", "refdes": "U1", "value": "ASIC", "source_name": "CUSTOM_ASIC", "package": "BGA-999", "x": 10, "y": 10}
+    ]
+  }
+}

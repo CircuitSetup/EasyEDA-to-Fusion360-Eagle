@@ -1,0 +1,207 @@
+/*
+  easyeda2fusion_launcher.ulp
+  Minimal helper shim for Fusion 360 Electronics / EAGLE.
+
+  This ULP intentionally does not perform conversion logic.
+  It only gathers paths and launches the Python converter.
+*/
+
+string inPath;
+string outPath;
+string mode;
+string matchMode;
+string libPath;
+string libArg;
+string resistorLibPath;
+string resistorLibArg;
+string capacitorLibPath;
+string capacitorLibArg;
+string noDefaultLibsArg;
+string pythonExec;
+string runCmd;
+string installCmd;
+string toolRoot;
+int hasPython;
+int hasModule;
+int disableDefaultLibs;
+
+int ask_yes_no(string title, string message) {
+  int answer;
+  answer = 0;
+  dlgDialog(title) {
+    dlgVBoxLayout {
+      dlgLabel(message);
+      dlgHBoxLayout {
+        dlgPushButton("+&Yes") {
+          answer = 1;
+          dlgAccept();
+        }
+        dlgPushButton("&No") {
+          answer = 0;
+          dlgAccept();
+        }
+      }
+    }
+  };
+  return answer;
+}
+
+inPath = dlgFileOpen("Select EasyEDA input JSON", "", "*.json");
+if (!inPath) {
+  exit(0);
+}
+
+outPath = dlgDirectory("Select output directory", "");
+if (!outPath) {
+  exit(0);
+}
+
+mode = "full";
+matchMode = "auto";
+libArg = "";
+resistorLibArg = "";
+capacitorLibArg = "";
+noDefaultLibsArg = "";
+disableDefaultLibs = 0;
+
+if (ask_yes_no(
+  "Library Mode",
+  "Default behavior is to use local Fusion/EAGLE libraries for matching.\n\n" +
+  "Select Yes to disable default local library matching and create generated libraries only.\n" +
+  "Select No to keep default Fusion library matching enabled."
+)) {
+  disableDefaultLibs = 1;
+  noDefaultLibsArg = " --no-default-fusion-libraries";
+}
+
+if (!disableDefaultLibs && ask_yes_no(
+  "Extra Library Folder",
+  "Add an extra library folder containing .lbr files?"
+)) {
+  libPath = dlgDirectory("Select library folder containing .lbr files", "");
+  if (libPath) {
+    libArg = " --library \"" + libPath + "\"";
+  }
+}
+
+if (ask_yes_no(
+  "Resistor Library",
+  "Choose a preferred resistor library?\n\n" +
+  "Select Yes to pick a .lbr/.json file (or cancel file dialog to choose a folder)."
+)) {
+  resistorLibPath = dlgFileOpen("Select resistor library file", "", "*.lbr;*.json");
+  if (!resistorLibPath) {
+    resistorLibPath = dlgDirectory("Select resistor library folder", "");
+  }
+  if (resistorLibPath) {
+    resistorLibArg = " --resistor-library \"" + resistorLibPath + "\"";
+  }
+}
+
+if (ask_yes_no(
+  "Capacitor Library",
+  "Choose a preferred capacitor library?\n\n" +
+  "Select Yes to pick a .lbr/.json file (or cancel file dialog to choose a folder)."
+)) {
+  capacitorLibPath = dlgFileOpen("Select capacitor library file", "", "*.lbr;*.json");
+  if (!capacitorLibPath) {
+    capacitorLibPath = dlgDirectory("Select capacitor library folder", "");
+  }
+  if (capacitorLibPath) {
+    capacitorLibArg = " --capacitor-library \"" + capacitorLibPath + "\"";
+  }
+}
+
+/*
+  Probe Python using py launcher first, then plain python.
+*/
+hasPython = 0;
+if (system("cmd /c py -3 --version >nul 2>nul") == 0) {
+  hasPython = 1;
+  pythonExec = "py -3";
+}
+else if (system("cmd /c python --version >nul 2>nul") == 0) {
+  hasPython = 1;
+  pythonExec = "python";
+}
+
+if (!hasPython) {
+  int installChoice;
+  installChoice = ask_yes_no(
+    "Python Installation",
+    "Python 3 was not detected.\n\n" +
+    "Select Yes to try installing via winget (may require admin rights).\n" +
+    "Select No to cancel and install manually."
+  );
+
+  if (installChoice) {
+    system("cmd /k winget install --id Python.Python.3.12 -e --source winget");
+  }
+
+  dlgMessageBox(
+    "After Python is installed, rerun this ULP.\n\n" +
+    "Manual install URL:\nhttps://www.python.org/downloads/windows/"
+  );
+  exit(0);
+}
+
+/*
+  Verify converter module availability for the selected Python.
+*/
+hasModule = 0;
+if (system("cmd /c " + pythonExec + " -c \"import easyeda2fusion\" >nul 2>nul") == 0) {
+  hasModule = 1;
+}
+
+if (!hasModule) {
+  int installModuleChoice;
+  installModuleChoice = ask_yes_no(
+    "Module Install",
+    "Python is available, but module 'easyeda2fusion' is not installed.\n\n" +
+    "Select Yes to install now using pip editable mode.\n" +
+    "Select No to cancel."
+  );
+
+  if (!installModuleChoice) {
+    dlgMessageBox(
+      "Install manually, then rerun this ULP.\n\n" +
+      "Example:\npython -m pip install -e <converter_repo_path>"
+    );
+    exit(0);
+  }
+
+  toolRoot = dlgDirectory("Select converter project folder (contains pyproject.toml/setup.py)", "");
+  if (!toolRoot) {
+    exit(0);
+  }
+
+  installCmd = "cmd /k " + pythonExec + " -m pip install -e \"" + toolRoot + "\"";
+  system(installCmd);
+
+  if (system("cmd /c " + pythonExec + " -c \"import easyeda2fusion\" >nul 2>nul") != 0) {
+    dlgMessageBox(
+      "Module install check failed.\n\n" +
+      "Please run manually:\n" + pythonExec + " -m pip install -e \"" + toolRoot + "\""
+    );
+    exit(0);
+  }
+}
+
+runCmd =
+  "cmd /k " + pythonExec +
+  " -m easyeda2fusion.ui.cli" +
+  " --input \"" + inPath + "\"" +
+  " --output \"" + outPath + "\"" +
+  " --mode " + mode +
+  " --match-mode " + matchMode +
+  libArg +
+  noDefaultLibsArg +
+  resistorLibArg +
+  capacitorLibArg;
+
+if (ask_yes_no("Launch Converter", "Launch converter in terminal?\n\n" + runCmd)) {
+  system(runCmd);
+}
+else {
+  dlgMessageBox("Run this command manually:\n\n" + runCmd);
+}

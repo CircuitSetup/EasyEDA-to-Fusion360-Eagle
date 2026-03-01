@@ -1,0 +1,35 @@
+{
+  "converted_successfully": true,
+  "converted_with_warnings": true,
+  "lossy_conversions": [],
+  "unresolved_parts": [
+    "R1"
+  ],
+  "ambiguous_mappings": [
+    "R1"
+  ],
+  "inferred_schematic_items": [],
+  "manual_review_items": [
+    "Board instance count mismatch: source=2 placed=1",
+    "Duplicate component instance refdes detected: R1",
+    "Net N1 has fewer than 2 connected pins",
+    "R1: missing device mapping",
+    "R1: missing package mapping",
+    "R1: package 0603 not found in package set"
+  ],
+  "metrics": {
+    "component_count": 2,
+    "net_count": 1,
+    "sheet_count": 1,
+    "device_count": 0,
+    "package_count": 0,
+    "layer_count": 2,
+    "board_track_count": 1,
+    "board_via_count": 1,
+    "board_pad_count": 1,
+    "source_component_instance_count": 2,
+    "placed_component_instance_count": 1,
+    "recognized_power_ground_nets": 0,
+    "inserted_supply_symbols": 0
+  }
+}

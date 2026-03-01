@@ -1,0 +1,25 @@
+{
+  "format": "easyeda_pro",
+  "project": {
+    "name": "ProMultilayer"
+  },
+  "settings": {
+    "unit": "mm"
+  },
+  "layers": [
+    {"layerId": "TopLayer", "name": "TopLayer"},
+    {"layerId": "InnerLayer1", "name": "InnerLayer1"},
+    {"layerId": "InnerLayer2", "name": "InnerLayer2"},
+    {"layerId": "BottomLayer", "name": "BottomLayer"},
+    {"layerId": "UnknownLayerX", "name": "UnknownLayerX"}
+  ],
+  "documents": [
+    {
+      "type": "pcb",
+      "name": "Board1",
+      "objects": [
+        {"type": "outline", "layer": "BoardOutlineLayer", "points": [[0, 0], [60, 0], [60, 45], [0, 45]]}
+      ]
+    }
+  ]
+}

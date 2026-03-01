@@ -1,0 +1,10 @@
+/src/easyeda2fusion/__pycache__
+/src/easyeda2fusion/builders/__pycache__
+/src/easyeda2fusion/emitters/__pycache__
+/src/easyeda2fusion/matchers/__pycache__
+/src/easyeda2fusion/model/__pycache__
+/src/easyeda2fusion/parsers/__pycache__
+/src/easyeda2fusion/reports/__pycache__
+/src/easyeda2fusion/ui/__pycache__
+/src/easyeda2fusion/utils/__pycache__
+/tests/__pycache__

@@ -1,0 +1,7 @@
+This converter emits conservative EAGLE scaffold files and reconstruction scripts.
+Use scripts/rebuild_project.scr to reconstruct full schematic and board intent.
+Project: BundleProject
+Source format: easyeda_pro
+Schematic scaffold: BundleProject.sch
+Board scaffold: BundleProject.brd
+Project file: eagle.epf

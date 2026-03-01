@@ -1,0 +1,11 @@
+SET CONFIRM OFF;
+SET Warning.PartHasNoUserDefinableValue 0;
+SET Warning.PartNoUserDefinableValueAssigned 0;
+USE 'C:/Users/John/Documents/EasyEDA-to-Fusion360-Eagle/_tmp_crosscheck/std_full/library/easyeda_generated.lbr';
+USE 'C:/Users/John/AppData/Local/Autodesk/Autodesk Fusion 360/Electron/lbr/adsk.eagle_library_532/SparkFun-Resistors.lbr';
+
+GRID MM 0.1 ON;
+SET WIRE_BEND 2;
+ADD 'RESISTOR0603@C:/Users/John/AppData/Local/Autodesk/Autodesk Fusion 360/Electron/lbr/adsk.eagle_library_532/SparkFun-Resistors.lbr' 'R1' (45.0000 20.0000) R0;
+VALUE 'R1' '10k';
+TEXT 'Demo' (22.8600 17.7800);

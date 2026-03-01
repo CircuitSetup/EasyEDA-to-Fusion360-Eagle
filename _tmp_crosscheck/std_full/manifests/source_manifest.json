@@ -1,0 +1,12 @@
+{
+  "source_format": "easyeda_std",
+  "input_files": [
+    "C:\\Users\\John\\Documents\\EasyEDA-to-Fusion360-Eagle\\tests\\fixtures\\std_full_project.json"
+  ],
+  "metadata": {
+    "name": "StdFullProject",
+    "unit": "mil",
+    "coordinate_scale_to_mm": 0.254
+  },
+  "events": []
+}

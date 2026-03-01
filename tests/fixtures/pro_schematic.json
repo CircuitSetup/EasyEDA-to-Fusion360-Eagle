@@ -1,0 +1,24 @@
+{
+  "format": "easyeda_pro",
+  "project": {
+    "name": "ProSchematicOnly"
+  },
+  "settings": {
+    "unit": "mm"
+  },
+  "layers": [
+    {"layerId": "TopLayer", "name": "TopLayer"},
+    {"layerId": "BottomLayer", "name": "BottomLayer"}
+  ],
+  "documents": [
+    {
+      "type": "schematic",
+      "name": "Sheet1",
+      "objects": [
+        {"type": "component", "refdes": "R1", "value": "1k", "source_name": "RES_1K", "package": "0402", "x": 10, "y": 10},
+        {"type": "component", "refdes": "C1", "value": "10u", "source_name": "CAP_10U", "package": "0402", "x": 20, "y": 10},
+        {"type": "net", "name": "NET1", "nodes": [{"refdes": "R1", "pin": "1"}, {"refdes": "C1", "pin": "1"}]}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "format": "easyeda_std",
+  "meta": {
+    "name": "MissingLibraryGeneration",
+    "unit": "mil",
+    "coordinate_scale_to_mm": 0.254
+  },
+  "schematic": {
+    "name": "Main",
+    "objects": [
+      {"type": "component", "refdes": "R1", "value": "10k", "source_name": "RESISTOR_GENERIC", "package": "0805", "x": 10, "y": 10}
+    ]
+  }
+}

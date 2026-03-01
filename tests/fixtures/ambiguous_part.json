@@ -1,0 +1,14 @@
+{
+  "format": "easyeda_std",
+  "meta": {
+    "name": "AmbiguousMatch",
+    "unit": "mil",
+    "coordinate_scale_to_mm": 0.254
+  },
+  "schematic": {
+    "name": "Main",
+    "objects": [
+      {"type": "component", "refdes": "R1", "value": "1k", "source_name": "GENERIC_RES", "package": "0603", "x": 10, "y": 10}
+    ]
+  }
+}
