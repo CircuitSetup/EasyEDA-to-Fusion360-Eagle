@@ -106,7 +106,6 @@ converted/
   scripts/
     rebuild_schematic.scr
     rebuild_board.scr
-    rebuild_project.scr
   manifests/
     source_manifest.json
     normalized_project.json

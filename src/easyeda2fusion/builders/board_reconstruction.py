@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import re
 
-from easyeda2fusion.model import Project, Severity, Side, project_event
+from easyeda2fusion.model import Package, Project, Severity, Side, SourceFormat, project_event
 
 
 class BoardReconstructionBuilder:
@@ -13,16 +13,17 @@ class BoardReconstructionBuilder:
         lines: list[str] = [
             "GRID MM 0.05 ON;",
             "SET WIRE_BEND 2;",
+            "SET SPIN 1;",
         ]
 
         board = project.board
         if board is None:
             return lines
-        net_alias = _build_track_net_aliases(board.tracks, board.vias)
+        net_alias = _project_track_net_aliases(project)
 
         refdes_map = _build_refdes_map(project)
+        package_lookup = _package_lookup(project)
         valid_pins_by_ref = _valid_pins_by_ref(project)
-        pad_count_by_package = _package_pad_count_lookup(project)
         placed_refs: set[str] = set()
         skipped_no_device: list[str] = []
         for component in project.components:
@@ -31,12 +32,17 @@ class BoardReconstructionBuilder:
                 continue
             safe_refdes = _resolve_component_refdes(component, refdes_map)
             placed_refs.add(safe_refdes)
-            package_id = str(component.package_id or "").strip()
-            pad_count = pad_count_by_package.get(package_id)
-            lines.append(
-                f"ROTATE ={_orientation_token(component.rotation_deg, component.side, pad_count=pad_count)} {safe_refdes};"
+            package_obj = _resolve_component_package(component, package_lookup)
+            effective_rotation_deg = _resolved_board_component_rotation_deg(
+                component=component,
+                source_format=project.source_format,
+                package=package_obj,
             )
-            lines.append(f"MOVE {safe_refdes} ({component.at.x_mm:.4f} {component.at.y_mm:.4f});")
+            lines.append(
+                f"ROTATE ={_orientation_token(effective_rotation_deg, component.side)} {_quote_token(safe_refdes)};"
+            )
+            move_x, move_y = _component_move_point_mm(component, effective_rotation_deg=effective_rotation_deg)
+            lines.append(f"MOVE {safe_refdes} ({move_x:.4f} {move_y:.4f});")
         _record_skipped_components_without_device(project, skipped_no_device)
 
         # Assign pads to signals first so board imports retain logical connectivity.
@@ -122,17 +128,19 @@ class BoardReconstructionBuilder:
                 continue
             emitted_track_keys.add(track_key)
 
-            if layer_number != current_layer:
-                lines.append(f"LAYER {layer_number};")
-                current_layer = layer_number
+            layer_command = _track_layer_command_token(layer_number)
+            if layer_command != current_layer:
+                lines.append(f"LAYER {layer_command};")
+                current_layer = layer_command
             wire_prefix = "WIRE"
             canonical_track_net = _canonical_net_name(track.net, net_alias)
             if canonical_track_net and _is_copper_layer_num(layer_number):
                 # Bind copper traces to explicit signal names to avoid interactive
                 # "merge N$xx" prompts during script replay.
                 wire_prefix = f"WIRE {_quote_token(canonical_track_net)}"
+            wire_width = _track_wire_width_for_layer(layer_number, track.width_mm)
             lines.append(
-                f"{wire_prefix} {max(track.width_mm, 0.01):.4f} ({track.start.x_mm:.4f} {track.start.y_mm:.4f}) ({track.end.x_mm:.4f} {track.end.y_mm:.4f});"
+                f"{wire_prefix} {wire_width:.4f} ({track.start.x_mm:.4f} {track.start.y_mm:.4f}) ({track.end.x_mm:.4f} {track.end.y_mm:.4f});"
             )
 
         for via in board.vias:
@@ -160,7 +168,11 @@ class BoardReconstructionBuilder:
                 lines.append(f"LAYER {layer_num};")
                 lines.append(f"CHANGE SIZE {max(float(text.size_mm), 0.1):.4f};")
                 mirrored = bool(text.mirrored) or layer_num in {"22", "26", "28"}
-                rotation = int(round(float(text.rotation_deg or 0.0))) % 360
+                rotation = _board_text_rotation_deg(
+                    source_format=project.source_format,
+                    layer_num=layer_num,
+                    rotation_deg=float(text.rotation_deg or 0.0),
+                )
                 orient = f"MR{rotation}" if mirrored else f"R{rotation}"
                 lines.append(
                     f"TEXT '{payload}' ({text.at.x_mm:.4f} {text.at.y_mm:.4f}) {orient};"
@@ -274,8 +286,9 @@ def _emit_region_wires(layer: str, points, width_mm: float, close: bool) -> list
     for idx in range(max(0, count)):
         start = cleaned[idx]
         end = cleaned[(idx + 1) % len(cleaned)]
+        wire_width = _region_wire_width_for_layer(layer_num, width_mm)
         lines.append(
-            f"WIRE {max(width_mm, 0.0):.4f} ({start.x_mm:.4f} {start.y_mm:.4f}) ({end.x_mm:.4f} {end.y_mm:.4f});"
+            f"WIRE {wire_width:.4f} ({start.x_mm:.4f} {start.y_mm:.4f}) ({end.x_mm:.4f} {end.y_mm:.4f});"
         )
     return lines
 
@@ -311,6 +324,26 @@ def _is_copper_layer_num(layer_num: str) -> bool:
     return idx == 1 or idx == 16 or 2 <= idx <= 15
 
 
+def _region_wire_width_for_layer(layer_num: str, width_mm: float) -> float:
+    # Emit fixed user-requested silkscreen wire width.
+    if layer_num in {"21", "22"}:
+        return 0.3
+    return max(float(width_mm), 0.0)
+
+
+def _track_wire_width_for_layer(layer_num: str, width_mm: float) -> float:
+    # Emit fixed user-requested silkscreen wire width.
+    if layer_num in {"21", "22"}:
+        return 0.3
+    return max(float(width_mm), 0.01)
+
+
+def _track_layer_command_token(layer_num: str) -> str:
+    if str(layer_num) == "16":
+        return "Bottom"
+    return str(layer_num)
+
+
 def _clean_points(points, close: bool) -> list:
     if not points:
         return []
@@ -344,7 +377,7 @@ def _track_dedupe_key(
     return (
         layer_number,
         _canonical_net_name(track.net, net_alias),
-        f"{max(track.width_mm, 0.01):.4f}",
+        f"{_track_wire_width_for_layer(layer_number, track.width_mm):.4f}",
         f"{sx:.4f}",
         f"{sy:.4f}",
         f"{ex:.4f},{ey:.4f}",
@@ -373,36 +406,136 @@ def _valid_pins_by_ref(project: Project) -> dict[str, set[str]]:
     return valid
 
 
-def _orientation_token(
-    rotation_deg: float,
-    side: Side,
-    *,
-    pad_count: int | None = None,
-) -> str:
+def _orientation_token(rotation_deg: float, side: Side) -> str:
     angle = int(round(float(rotation_deg or 0.0))) % 360
-    # Canonicalize -90/270 to +90 for symmetric two-pin footprints.
-    # Apply this uniformly so resistors/capacitors/other 2-pin parts
-    # share identical rotation handling.
-    if pad_count == 2 and angle == 270:
-        angle = 90
     if side == Side.BOTTOM:
         return f"MR{angle}"
     return f"R{angle}"
 
 
-def _package_pad_count_lookup(project: Project) -> dict[str, int]:
-    counts: dict[str, int] = {}
+def _component_rotation_with_external_offset(component) -> float:
+    attrs = getattr(component, "attributes", {}) or {}
+    try:
+        delta = float(attrs.get("_external_rotation_offset_deg", 0.0))
+    except Exception:
+        delta = 0.0
+    return float(component.rotation_deg or 0.0) + delta
+
+
+def _resolved_board_component_rotation_deg(
+    component,
+    source_format: SourceFormat,
+    package: Package | None,
+) -> float:
+    resolved = _component_rotation_with_external_offset(component)
+    if source_format == SourceFormat.EASYEDA_PRO and _component_is_resistor(component):
+        resolved = -resolved
+        if package is not None and _package_pin_count(package) == 2:
+            resolved = _canonicalize_two_pin_quarter_turn(resolved)
+        if package is not None and _is_adjustable_resistor_package(package):
+            snapped = int(round(float(resolved or 0.0))) % 360
+            if snapped == 180:
+                resolved = 90.0
+    return resolved
+
+
+def _component_move_point_mm(component, effective_rotation_deg: float | None = None) -> tuple[float, float]:
+    x = float(component.at.x_mm)
+    y = float(component.at.y_mm)
+    attrs = getattr(component, "attributes", {}) or {}
+    try:
+        dx = float(attrs.get("_external_origin_offset_x_mm", 0.0))
+        dy = float(attrs.get("_external_origin_offset_y_mm", 0.0))
+    except Exception:
+        dx = 0.0
+        dy = 0.0
+
+    if abs(dx) < 1e-9 and abs(dy) < 1e-9:
+        return x, y
+
+    if component.side == Side.BOTTOM:
+        dx = -dx
+
+    rotation_deg = float(component.rotation_deg or 0.0) if effective_rotation_deg is None else float(effective_rotation_deg)
+    angle = math.radians(rotation_deg)
+    cos_a = math.cos(angle)
+    sin_a = math.sin(angle)
+    ox = dx * cos_a - dy * sin_a
+    oy = dx * sin_a + dy * cos_a
+    return x + ox, y + oy
+
+
+def _board_text_rotation_deg(
+    source_format: SourceFormat,
+    layer_num: str,
+    rotation_deg: float,
+) -> int:
+    angle = int(round(float(rotation_deg or 0.0))) % 360
+    if source_format == SourceFormat.EASYEDA_PRO and layer_num in {"21", "22"}:
+        # EasyEDA Pro board STRING rotation is clockwise-positive on silkscreen.
+        # EAGLE rotation is counter-clockwise-positive.
+        return (-angle) % 360
+    return angle
+
+
+def _package_lookup(project: Project) -> dict[str, Package]:
+    lookup: dict[str, Package] = {}
     for package in project.packages:
-        count = len(
-            [
-                pad
-                for pad in package.pads
-                if str(getattr(pad, "pad_number", "") or "").strip()
-            ]
-        )
-        counts[str(package.package_id)] = count
-        counts[str(package.name)] = count
-    return counts
+        lookup[str(package.package_id)] = package
+        if package.name:
+            lookup[str(package.name)] = package
+    return lookup
+
+
+def _resolve_component_package(component, package_lookup: dict[str, Package]) -> Package | None:
+    for key in (
+        component.package_id,
+        (getattr(component, "attributes", {}) or {}).get("package_name"),
+        (getattr(component, "attributes", {}) or {}).get("package"),
+        (getattr(component, "attributes", {}) or {}).get("Package"),
+    ):
+        token = str(key or "").strip()
+        if not token:
+            continue
+        pkg = package_lookup.get(token)
+        if pkg is not None:
+            return pkg
+    return None
+
+
+def _package_pin_count(package: Package) -> int:
+    pins = {
+        str(pad.pad_number).strip()
+        for pad in package.pads
+        if str(pad.pad_number).strip()
+    }
+    return len(pins)
+
+
+def _component_is_resistor(component) -> bool:
+    ref = _sanitize_refdes(str(getattr(component, "refdes", "") or "")).upper()
+    if re.match(r"^R[0-9]", ref):
+        return True
+    source = str(getattr(component, "source_name", "") or "").upper()
+    if "RES" in source:
+        return True
+    return False
+
+
+def _canonicalize_two_pin_quarter_turn(rotation_deg: float) -> float:
+    angle = int(round(float(rotation_deg or 0.0))) % 360
+    if angle == 270:
+        return 90.0
+    return float(angle)
+
+
+def _is_adjustable_resistor_package(package: Package) -> bool:
+    token = _norm_pkg_token(str(package.name or package.package_id or ""))
+    return "RESADJ" in token or "TRIMMER" in token
+
+
+def _norm_pkg_token(value: str) -> str:
+    return "".join(ch for ch in str(value or "").upper() if ch.isalnum())
 
 
 def _canonical_net_name(name: str | None, net_alias: dict[str, str]) -> str:
@@ -478,6 +611,26 @@ def _build_track_net_aliases(tracks, vias=None) -> dict[str, str]:
         canonical = _pick_canonical_net_name(members)
         for member in members:
             aliases[member] = canonical
+    return aliases
+
+
+def _project_track_net_aliases(project: Project) -> dict[str, str]:
+    board = project.board
+    if board is None:
+        return {}
+
+    metadata = getattr(project, "metadata", None)
+    if isinstance(metadata, dict):
+        cached = metadata.get("_track_net_aliases")
+        if isinstance(cached, dict):
+            return {
+                str(key): str(value)
+                for key, value in cached.items()
+            }
+
+    aliases = _build_track_net_aliases(board.tracks, board.vias)
+    if isinstance(metadata, dict):
+        metadata["_track_net_aliases"] = dict(aliases)
     return aliases
 
 

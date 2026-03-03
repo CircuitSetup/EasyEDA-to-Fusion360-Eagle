@@ -197,6 +197,7 @@ def test_pro_poured_skips_complex_multi_ring_geometry():
 
 def test_pro_esym_symbol_definition_extracts_pin_names_and_types():
     records = [
+        ["HEAD", {"originX": 5.0, "originY": -3.0}],
         ["PIN", "p1", 1, None, -20, 0, 10, 0, None, 0, 0, 1],
         ["ATTR", "a1", "p1", "NAME", "GND", False, False, -5, -4, 0, "st3", 0],
         ["ATTR", "a2", "p1", "NUMBER", "1", False, False, -10, 0, 0, "st4", 0],
@@ -207,6 +208,8 @@ def test_pro_esym_symbol_definition_extracts_pin_names_and_types():
     assert symbol_def is not None
     assert symbol_def["id"] == "sym1"
     assert symbol_def["name"] == "SYM1"
+    assert symbol_def["origin_x"] == 5.0
+    assert symbol_def["origin_y"] == -3.0
     assert len(symbol_def["pins"]) == 1
     pin = symbol_def["pins"][0]
     assert pin["number"] == "1"

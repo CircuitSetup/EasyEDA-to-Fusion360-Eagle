@@ -249,6 +249,7 @@ class Normalizer:
         symbol_id = str(obj.get("id") or obj.get("symbol_id") or obj.get("name") or "symbol")
         name = str(obj.get("name") or symbol_id)
         pins: list[SymbolPin] = []
+        graphics: list[dict[str, Any]] = []
 
         raw_pins = obj.get("pins")
         if isinstance(raw_pins, list):
@@ -256,15 +257,47 @@ class Normalizer:
                 if not isinstance(pin, dict):
                     continue
                 x, y = _point_from_obj(pin, unit_norm)
+                rotation_raw = pin.get("rotation")
+                length_raw = pin.get("length")
+                rotation_deg: float | None = None
+                length_mm: float | None = None
+                if rotation_raw is not None:
+                    try:
+                        rotation_deg = float(rotation_raw)
+                    except Exception:
+                        rotation_deg = None
+                if length_raw is not None:
+                    try:
+                        length_mm = unit_norm.scalar_to_mm(float(length_raw))
+                    except Exception:
+                        length_mm = None
                 pins.append(
                     SymbolPin(
                         pin_number=str(pin.get("number", pin.get("pin", ""))),
                         pin_name=str(pin.get("name", "")),
                         at=Point(x, y),
+                        rotation_deg=rotation_deg,
+                        length_mm=length_mm,
                     )
                 )
 
-        return Symbol(symbol_id=symbol_id, name=name, pins=pins)
+        origin_x_raw = obj.get("origin_x", obj.get("originX"))
+        origin_y_raw = obj.get("origin_y", obj.get("originY"))
+        if origin_x_raw is not None and origin_y_raw is not None:
+            try:
+                origin_x_mm = unit_norm.scalar_to_mm(float(origin_x_raw))
+                origin_y_mm = unit_norm.scalar_to_mm(float(origin_y_raw))
+                graphics.append(
+                    {
+                        "kind": "origin",
+                        "x_mm": origin_x_mm,
+                        "y_mm": origin_y_mm,
+                    }
+                )
+            except Exception:
+                pass
+
+        return Symbol(symbol_id=symbol_id, name=name, pins=pins, graphics=graphics)
 
     @staticmethod
     def _net_from_obj(obj: dict[str, Any]) -> Net:

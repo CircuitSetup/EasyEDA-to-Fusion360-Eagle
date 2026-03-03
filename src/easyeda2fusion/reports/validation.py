@@ -189,6 +189,43 @@ def validate_project(
         inferred_items.extend([f"uncertain_component:{ref}" for ref in inference_report.uncertain_components])
         manual_review.extend(inference_report.manual_review_items)
 
+    organization_metrics = (
+        project.metadata.get("schematic_organization_metrics", {})
+        if isinstance(project.metadata, dict)
+        else {}
+    )
+    if not isinstance(organization_metrics, dict):
+        organization_metrics = {}
+    overlap_count = int(organization_metrics.get("overlap_count", 0) or 0)
+    orphan_label_count = int(organization_metrics.get("orphan_label_count", 0) or 0)
+    disconnected_count = int(organization_metrics.get("disconnected_component_count", 0) or 0)
+    if overlap_count > 0:
+        manual_review.append(f"Schematic organization overlap_count={overlap_count}")
+    if orphan_label_count > 0:
+        manual_review.append(f"Schematic organization orphan_label_count={orphan_label_count}")
+    if disconnected_count > 0:
+        manual_review.append(f"Schematic organization disconnected_component_count={disconnected_count}")
+
+    draw_metrics = (
+        project.metadata.get("schematic_draw_metrics", {})
+        if isinstance(project.metadata, dict)
+        else {}
+    )
+    if not isinstance(draw_metrics, dict):
+        draw_metrics = {}
+    draw_unresolved_anchor_count = int(draw_metrics.get("unresolved_pin_anchor_count", 0) or 0)
+    draw_orphan_endpoint_count = int(draw_metrics.get("orphan_wire_endpoint_count", 0) or 0)
+    draw_label_only_count = int(draw_metrics.get("label_only_connection_count", 0) or 0)
+    draw_disconnected_count = int(draw_metrics.get("disconnected_component_count", 0) or 0)
+    if draw_unresolved_anchor_count > 0:
+        manual_review.append(f"Schematic draw unresolved_pin_anchor_count={draw_unresolved_anchor_count}")
+    if draw_orphan_endpoint_count > 0:
+        manual_review.append(f"Schematic draw orphan_wire_endpoint_count={draw_orphan_endpoint_count}")
+    if draw_label_only_count > 0:
+        manual_review.append(f"Schematic draw label_only_connection_count={draw_label_only_count}")
+    if draw_disconnected_count > 0:
+        manual_review.append(f"Schematic draw disconnected_component_count={draw_disconnected_count}")
+
     has_warnings = bool(lossy_layers or unresolved or ambiguous or manual_review)
 
     report = ValidationReport(
@@ -213,6 +250,22 @@ def validate_project(
             "placed_component_instance_count": placed_instance_total,
             "recognized_power_ground_nets": len(recognized_power_nets),
             "inserted_supply_symbols": len(inserted_supply_nets),
+            "schematic_organization_block_count": int(organization_metrics.get("block_count", 0) or 0),
+            "schematic_organization_repeated_channel_groups": int(organization_metrics.get("repeated_channel_groups", 0) or 0),
+            "schematic_organization_crossing_risk_score": int(organization_metrics.get("crossing_risk_score", 0) or 0),
+            "schematic_organization_overlap_count": overlap_count,
+            "schematic_organization_orphan_label_count": orphan_label_count,
+            "schematic_organization_disconnected_component_count": disconnected_count,
+            "schematic_organization_power_net_count": len(organization_metrics.get("recognized_power_nets", [])),
+            "schematic_organization_ground_net_count": len(organization_metrics.get("recognized_ground_nets", [])),
+            "schematic_draw_symbol_count": int(draw_metrics.get("symbol_count", 0) or 0),
+            "schematic_draw_connected_pin_count": int(draw_metrics.get("connected_pin_count", 0) or 0),
+            "schematic_draw_wire_segment_count": int(draw_metrics.get("wire_segment_count", 0) or 0),
+            "schematic_draw_junction_count": int(draw_metrics.get("junction_count", 0) or 0),
+            "schematic_draw_orphan_wire_endpoint_count": draw_orphan_endpoint_count,
+            "schematic_draw_unresolved_pin_anchor_count": draw_unresolved_anchor_count,
+            "schematic_draw_label_only_connection_count": draw_label_only_count,
+            "schematic_draw_disconnected_component_count": draw_disconnected_count,
         },
     )
     return report

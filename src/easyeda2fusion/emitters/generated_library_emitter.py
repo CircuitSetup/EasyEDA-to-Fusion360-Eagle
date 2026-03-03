@@ -209,11 +209,23 @@ def emit_generated_library(
         pins = symbol.pins or []
         if not pins:
             pins = []
-        pin_positions: list[tuple[float, float]] = []
+        pin_positions = [
+            (
+                float(pin.at.x_mm) if pin.at else float(idx * 2.54),
+                float(pin.at.y_mm) if pin.at else 0.0,
+            )
+            for idx, pin in enumerate(pins, start=1)
+        ]
+        if pin_positions:
+            center_x = sum(px for px, _ in pin_positions) / float(len(pin_positions))
+            center_y = sum(py for _, py in pin_positions) / float(len(pin_positions))
+        else:
+            center_x = 0.0
+            center_y = 0.0
+        body_bounds = _symbol_bounds_from_graphics(symbol.graphics)
         for idx, pin in enumerate(pins, start=1):
-            px = pin.at.x_mm if pin.at else float(idx * 2.54)
-            py = pin.at.y_mm if pin.at else 0.0
-            angle = "180" if px > 0 else "0"
+            px, py = pin_positions[idx - 1]
+            angle = _symbol_pin_rotation_deg(px, py, center_x, center_y, body_bounds)
             pin_name = str(pin.pin_name or pin.pin_number or idx)
             direction = (
                 "sup"
@@ -233,7 +245,6 @@ def emit_generated_library(
                     "rot": f"R{angle}",
                 },
             )
-            pin_positions.append((float(px), float(py)))
 
         graphic_wires = [item for item in (symbol.graphics or []) if item.get("kind") == "wire"]
         if graphic_wires:
@@ -803,3 +814,53 @@ def _pin_direction(pin_name: str) -> str:
     if token in {"GND", "AGND", "DGND", "PGND", "SGND", "VCC", "VDD", "VSS", "VIN", "VOUT", "3V3", "5V", "5V0", "12V", "24V"}:
         return "pwr"
     return "pas"
+
+
+def _symbol_pin_rotation_deg(
+    px: float,
+    py: float,
+    center_x: float,
+    center_y: float,
+    body_bounds: tuple[float, float, float, float] | None = None,
+) -> str:
+    if body_bounds is not None:
+        min_x, max_x, min_y, max_y = body_bounds
+        tol = 0.1
+        if px <= min_x + tol:
+            return "0"
+        if px >= max_x - tol:
+            return "180"
+        if py >= max_y - tol:
+            return "270"
+        if py <= min_y + tol:
+            return "90"
+
+    dx = float(px) - float(center_x)
+    dy = float(py) - float(center_y)
+    if abs(dy) > abs(dx):
+        return "270" if dy > 0 else "90"
+    return "180" if dx > 0 else "0"
+
+
+def _symbol_bounds_from_graphics(
+    graphics: list[dict[str, object]] | None,
+) -> tuple[float, float, float, float] | None:
+    if not graphics:
+        return None
+    xs: list[float] = []
+    ys: list[float] = []
+    for item in graphics:
+        if str(item.get("kind", "")).strip().lower() != "wire":
+            continue
+        try:
+            x1 = float(item.get("x1_mm", 0.0))
+            x2 = float(item.get("x2_mm", 0.0))
+            y1 = float(item.get("y1_mm", 0.0))
+            y2 = float(item.get("y2_mm", 0.0))
+        except (TypeError, ValueError):
+            continue
+        xs.extend([x1, x2])
+        ys.extend([y1, y2])
+    if not xs or not ys:
+        return None
+    return (min(xs), max(xs), min(ys), max(ys))

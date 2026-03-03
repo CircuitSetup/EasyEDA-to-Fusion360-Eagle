@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import os
 import re
 import xml.etree.ElementTree as ET
@@ -148,12 +149,9 @@ def _entries_from_lbr_file(path: Path) -> list[LibraryEntry]:
     entries: list[LibraryEntry] = []
     lib_name = path.stem
 
-    try:
-        tree = ET.parse(path)
-    except Exception:
+    root = _parse_lbr_root(path)
+    if root is None:
         return entries
-
-    root = tree.getroot()
     for deviceset in root.findall(".//library/devicesets/deviceset"):
         ds_name = str(deviceset.get("name") or "").strip()
         if not ds_name:
@@ -193,11 +191,50 @@ def _default_fusion_library_dirs() -> list[Path]:
     localapp = Path(os.environ.get("LOCALAPPDATA", "~")).expanduser()
     return [
         user / "Documents" / "EAGLE" / "lbr",
+        user / "Documents" / "EAGLE" / "libraries",
         user / "Documents" / "Autodesk" / "EAGLE" / "lbr",
+        user / "Documents" / "Autodesk" / "EAGLE" / "libraries",
         appdata / "Autodesk" / "EAGLE" / "lbr",
+        appdata / "Autodesk" / "EAGLE" / "libraries",
         localapp / "Autodesk" / "EAGLE" / "lbr",
+        localapp / "Autodesk" / "EAGLE" / "libraries",
         localapp / "Autodesk" / "Autodesk Fusion 360" / "Electron" / "lbr",
+        localapp / "Autodesk" / "Autodesk Fusion 360" / "Electron" / "libraries",
     ]
+
+
+def _parse_lbr_root(path: Path) -> ET.Element | None:
+    try:
+        return ET.parse(path).getroot()
+    except Exception:
+        pass
+
+    try:
+        raw = path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return None
+
+    sanitized = _sanitize_xml_named_entities(raw)
+    try:
+        return ET.fromstring(sanitized)
+    except Exception:
+        return None
+
+
+def _sanitize_xml_named_entities(text: str) -> str:
+    xml_builtins = {"amp", "lt", "gt", "apos", "quot"}
+    pattern = re.compile(r"&([A-Za-z][A-Za-z0-9]+);")
+
+    def _replace(match: re.Match[str]) -> str:
+        name = str(match.group(1) or "")
+        if name in xml_builtins:
+            return match.group(0)
+        decoded = html.unescape(match.group(0))
+        if decoded == match.group(0):
+            return ""
+        return decoded
+
+    return pattern.sub(_replace, text)
 
 
 def _infer_component_class(text: str) -> str | None:

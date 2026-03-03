@@ -20,6 +20,7 @@ from easyeda2fusion.matchers.library_matcher import LibraryEntry, LibraryMatcher
 from easyeda2fusion.model import ConversionMode, MatchMode, Severity, SourceFormat, project_event
 from easyeda2fusion.parsers import parse_easyeda_files
 from easyeda2fusion.reports.layer_mapping import write_layer_mapping_report
+from easyeda2fusion.reports.schematic_pipeline import write_schematic_pipeline_reports
 from easyeda2fusion.reports.summary import write_summary
 from easyeda2fusion.reports.unresolved_parts import write_unresolved_reports
 from easyeda2fusion.reports.validation import validate_project, write_validation_report
@@ -29,6 +30,7 @@ from easyeda2fusion.utils.logging import configure_logging
 log = logging.getLogger(__name__)
 
 AmbiguityResolver = Callable[[object, List[LibraryEntry]], Optional[LibraryEntry]]
+ProgressCallback = Callable[[int, str], None]
 
 
 @dataclass
@@ -42,6 +44,7 @@ class ConversionConfig:
     resistor_library_path: Path | None = None
     capacitor_library_path: Path | None = None
     use_default_fusion_libraries: bool = True
+    schematic_layout_mode: str = "board"
     verbose: bool = False
 
 
@@ -57,23 +60,37 @@ class Converter:
         self,
         config: ConversionConfig,
         resolver: AmbiguityResolver | None = None,
+        progress: ProgressCallback | None = None,
     ) -> ConversionResult:
+        self._emit_progress(progress, 0, "Starting conversion")
         input_files = self._resolve_input_files(config.input_files)
+        self._emit_progress(progress, 5, "Resolved input paths")
 
         ensure_dir(config.output_dir)
         log_path = config.output_dir / "conversion.log"
         configure_logging(log_path=log_path, verbose=config.verbose)
 
+        self._emit_progress(progress, 10, "Parsing EasyEDA input")
         parsed = parse_easyeda_files(input_files, forced_format=config.source_format)
+        self._emit_progress(progress, 20, "Normalizing source model")
         normalization = Normalizer().normalize(parsed)
         project = normalization.project
+        project.metadata["schematic_layout_mode"] = self._normalize_schematic_layout_mode(
+            config.schematic_layout_mode
+        )
+        # Keep schematic imports on Fusion/EAGLE default grid behavior.
+        # The schematic builder uses this flag to avoid forcing GRID MM 0.1.
+        project.metadata["schematic_snap_to_default_grid"] = True
 
         self._apply_mode(project, config.mode)
+        self._emit_progress(progress, 30, "Applying conversion mode")
 
         inference_report: SchematicInferenceReport | None = None
         if config.mode == ConversionMode.BOARD_INFER_SCHEMATIC:
+            self._emit_progress(progress, 35, "Inferring schematic from board")
             inference_report = infer_schematic_from_board(project, force=True)
         elif config.mode == ConversionMode.FULL and project.board is not None and not project.sheets:
+            self._emit_progress(progress, 35, "Inferring schematic from board")
             inference_report = infer_schematic_from_board(project, force=True)
             project.events.append(
                 project_event(
@@ -83,6 +100,7 @@ class Converter:
                 )
             )
         elif config.mode == ConversionMode.FULL and project.board is not None and self._is_schematic_weak(project):
+            self._emit_progress(progress, 35, "Augmenting weak schematic from board")
             inference_report = infer_schematic_from_board(project, force=True)
             project.events.append(
                 project_event(
@@ -92,6 +110,7 @@ class Converter:
                 )
             )
 
+        self._emit_progress(progress, 45, "Loading library entries")
         library_entries = load_library_entries(
             config.library_path,
             resistor_library_path=config.resistor_library_path,
@@ -100,6 +119,7 @@ class Converter:
         )
         passive_preferred_paths = self._build_passive_library_preferences(config)
         matcher = LibraryMatcher()
+        self._emit_progress(progress, 60, "Matching parts to libraries")
         match_ctx = matcher.match(
             project=project,
             library_entries=library_entries,
@@ -109,15 +129,18 @@ class Converter:
         )
 
         self._cross_check_schematic_vs_board(project)
+        self._emit_progress(progress, 68, "Cross-checking schematic vs board")
 
         artifacts_dir = ensure_dir(config.output_dir / "artifacts")
         scripts_dir = ensure_dir(config.output_dir / "scripts")
         reports_dir = ensure_dir(config.output_dir / "reports")
         manifests_dir = ensure_dir(config.output_dir / "manifests")
         library_dir = ensure_dir(config.output_dir / "library")
+        self._emit_progress(progress, 72, "Preparing output directories")
 
         generated_files: dict[str, Path] = {}
 
+        self._emit_progress(progress, 76, "Writing manifests")
         generated_files["normalized_manifest"] = emit_normalized_manifest(project, manifests_dir)
         generated_files["source_manifest"] = emit_machine_manifest(
             {
@@ -151,10 +174,12 @@ class Converter:
                 "inferred_schematic_manifest.json",
             )
 
+        self._emit_progress(progress, 82, "Emitting project artifacts")
         generated_files.update(
             {f"artifact_{k}": v for k, v in emit_project_artifacts(project, artifacts_dir).items()}
         )
 
+        self._emit_progress(progress, 86, "Emitting libraries and rebuild scripts")
         generated_library_path = emit_generated_library(match_ctx, library_dir, project=project)
         if generated_library_path is not None:
             generated_files["library_generated_lbr"] = generated_library_path
@@ -174,6 +199,7 @@ class Converter:
             {f"library_{k}": v for k, v in emit_library_artifacts(project, match_ctx, library_dir).items()}
         )
 
+        self._emit_progress(progress, 92, "Generating reports and validation")
         generated_files["layer_mapping_report"] = write_layer_mapping_report(
             normalization.layer_report,
             reports_dir,
@@ -185,6 +211,10 @@ class Converter:
         validation = validate_project(project, match_ctx, inference_report)
         validation_paths = write_validation_report(validation, reports_dir)
         generated_files.update({f"validation_{k}": v for k, v in validation_paths.items()})
+        schematic_pipeline_paths = write_schematic_pipeline_reports(project, reports_dir)
+        generated_files.update(
+            {f"schematic_pipeline_{k}": v for k, v in schematic_pipeline_paths.items()}
+        )
 
         summary_payload = self._build_summary(
             project=project,
@@ -197,8 +227,16 @@ class Converter:
         summary_paths = write_summary(summary_payload, config.output_dir)
         generated_files.update({f"summary_{k}": v for k, v in summary_paths.items()})
         generated_files["conversion_log"] = log_path
+        self._emit_progress(progress, 100, "Conversion complete")
 
         return ConversionResult(output_dir=config.output_dir, summary=summary_payload, generated_files=generated_files)
+
+    @staticmethod
+    def _emit_progress(callback: ProgressCallback | None, percent: int, message: str) -> None:
+        if callback is None:
+            return
+        pct = max(0, min(int(percent), 100))
+        callback(pct, str(message))
 
     @staticmethod
     def _resolve_input_files(input_paths: list[Path]) -> list[Path]:
@@ -362,6 +400,13 @@ class Converter:
             if paths:
                 preferred["capacitor"] = paths
         return preferred
+
+    @staticmethod
+    def _normalize_schematic_layout_mode(value: str | None) -> str:
+        token = str(value or "").strip().lower()
+        if token in {"board", "clustered", "hybrid", "human"}:
+            return token
+        return "board"
 
 
 def _expand_library_preference_paths(path: Path) -> set[str]:

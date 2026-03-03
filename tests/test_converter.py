@@ -6,6 +6,7 @@ import pytest
 
 from easyeda2fusion.builders.normalizer import Normalizer
 from easyeda2fusion.converter import ConversionConfig, Converter
+from easyeda2fusion.matchers.library_loader import _entries_from_lbr_file
 from easyeda2fusion.matchers.library_matcher import LibraryEntry, LibraryMatcher
 from easyeda2fusion.model import ConversionMode, MatchMode
 from easyeda2fusion.model import (
@@ -38,12 +39,43 @@ def test_full_project_conversion(fixtures_dir, tmp_path):
     assert result.summary["board_status"] == "converted"
 
     assert (output / "manifests" / "normalized_project.json").exists()
-    assert (output / "scripts" / "rebuild_project.scr").exists()
+    assert (output / "scripts" / "rebuild_schematic.scr").exists()
+    assert (output / "scripts" / "rebuild_board.scr").exists()
+    assert not (output / "scripts" / "rebuild_project.scr").exists()
     assert (output / "reports" / "validation_report.json").exists()
     assert (output / "conversion.log").exists()
     assert (output / "artifacts" / "eagle.epf").exists()
     assert (output / "artifacts" / "StdFullProject.sch").exists()
     assert (output / "artifacts" / "StdFullProject.brd").exists()
+
+
+def test_converter_emits_progress_updates(fixtures_dir, tmp_path):
+    output = tmp_path / "progress_output"
+    empty_library_dir = tmp_path / "empty_library"
+    empty_library_dir.mkdir(parents=True, exist_ok=True)
+    config = ConversionConfig(
+        input_files=[fixtures_dir / "std_board.json"],
+        output_dir=output,
+        mode=ConversionMode.BOARD_INFER_SCHEMATIC,
+        match_mode=MatchMode.AUTO,
+        library_path=empty_library_dir,
+        use_default_fusion_libraries=False,
+    )
+
+    updates: list[tuple[int, str]] = []
+
+    def _capture(percent: int, message: str) -> None:
+        updates.append((int(percent), str(message)))
+
+    Converter().run(config, progress=_capture)
+
+    assert updates
+    assert updates[0][0] == 0
+    assert updates[-1][0] == 100
+    assert all(updates[idx][0] <= updates[idx + 1][0] for idx in range(len(updates) - 1))
+    assert any("Parsing EasyEDA input" in message for _, message in updates)
+    assert any("Matching parts to libraries" in message for _, message in updates)
+    assert any("Conversion complete" in message for _, message in updates)
 
 
 def test_board_only_inferred_schematic_reconstruction(fixtures_dir, tmp_path):
@@ -62,6 +94,40 @@ def test_board_only_inferred_schematic_reconstruction(fixtures_dir, tmp_path):
     assert inference_manifest.exists()
     payload = json.loads(inference_manifest.read_text(encoding="utf-8"))
     assert payload["inferred"] is True
+
+
+def test_converter_defaults_schematic_layout_mode_to_board(fixtures_dir, tmp_path):
+    output = tmp_path / "layout_mode_output"
+    config = ConversionConfig(
+        input_files=[fixtures_dir / "std_board.json"],
+        output_dir=output,
+        mode=ConversionMode.BOARD_INFER_SCHEMATIC,
+        match_mode=MatchMode.AUTO,
+    )
+
+    Converter().run(config)
+    manifest = output / "manifests" / "normalized_project.json"
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    assert payload.get("metadata", {}).get("schematic_layout_mode") == "board"
+
+
+def test_converter_validation_includes_schematic_organization_metrics(fixtures_dir, tmp_path):
+    output = tmp_path / "layout_metrics_output"
+    config = ConversionConfig(
+        input_files=[fixtures_dir / "std_board.json"],
+        output_dir=output,
+        mode=ConversionMode.BOARD_INFER_SCHEMATIC,
+        match_mode=MatchMode.AUTO,
+        schematic_layout_mode="human",
+    )
+
+    Converter().run(config)
+    payload = json.loads((output / "reports" / "validation_report.json").read_text(encoding="utf-8"))
+    metrics = payload.get("metrics", {})
+    assert "schematic_organization_block_count" in metrics
+    assert "schematic_organization_crossing_risk_score" in metrics
+    assert "schematic_organization_overlap_count" in metrics
+    assert "schematic_organization_orphan_label_count" in metrics
 
 
 def test_ambiguous_part_matching(fixtures_dir):
@@ -279,6 +345,43 @@ def test_normalizer_does_not_merge_refdes_when_identity_conflicts() -> None:
     assert refs.count("R5") == 2
 
 
+def test_normalizer_preserves_symbol_origin_metadata_for_anchor_rotation() -> None:
+    parsed = ParsedSource(
+        source_format=SourceFormat.EASYEDA_PRO,
+        input_files=["fixture.json"],
+        documents=[
+            ParsedDocument(
+                doc_type="schematic",
+                name="sch",
+                raw_objects=[
+                    {
+                        "type": "symbol",
+                        "id": "SYM1",
+                        "name": "SYM1",
+                        "origin_x": 10.0,
+                        "origin_y": -5.0,
+                        "pins": [
+                            {"number": "1", "name": "P1", "x": 20.0, "y": 0.0},
+                        ],
+                    }
+                ],
+            )
+        ],
+        metadata={"unit": "mm"},
+    )
+
+    project = Normalizer().normalize(parsed).project
+    symbol = next(item for item in project.symbols if item.symbol_id == "SYM1")
+    origin_markers = [
+        graphic
+        for graphic in symbol.graphics
+        if isinstance(graphic, dict) and str(graphic.get("kind", "")).lower() == "origin"
+    ]
+    assert len(origin_markers) == 1
+    assert float(origin_markers[0].get("x_mm", 0.0)) == 10.0
+    assert float(origin_markers[0].get("y_mm", 0.0)) == -5.0
+
+
 def test_non_passive_part_number_requires_package_match(fixtures_dir):
     parsed = parse_easyeda_files([fixtures_dir / "std_full_project.json"])
     project = Normalizer().normalize(parsed).project
@@ -302,6 +405,400 @@ def test_non_passive_part_number_requires_package_match(fixtures_dir):
     match = next(item for item in project.library_matches if item.refdes == "U1")
     assert match.stage == "stage5_unresolved"
     assert match.reason == "insufficient_package_geometry"
+
+
+def test_non_passive_part_number_match_splits_combined_part_and_package_token() -> None:
+    project = Project(
+        project_id="p_part_pkg_combo_match",
+        name="p_part_pkg_combo_match",
+        source_format=SourceFormat.EASYEDA_PRO,
+        input_files=[],
+        components=[
+            Component(
+                refdes="U1",
+                value="",
+                source_name="STM32F030K6T6LQFP48",
+                package_id=None,
+                at=Point(0.0, 0.0),
+            )
+        ],
+    )
+
+    entries = [
+        LibraryEntry(
+            device_name="STM32F030K6T6",
+            package_name="LQFP-48",
+            symbol_name="U",
+            component_class="ic",
+            add_token="st:STM32F030K6T6",
+        )
+    ]
+
+    ctx = LibraryMatcher().match(project, entries, match_mode=MatchMode.PACKAGE_FIRST)
+    assert ctx.summary.auto_matched == 1
+    assert project.components[0].device_id == "st:STM32F030K6T6"
+    assert project.components[0].package_id == "LQFP-48"
+
+
+def test_non_passive_part_number_combined_field_still_requires_package_match() -> None:
+    project = Project(
+        project_id="p_part_pkg_combo_mismatch",
+        name="p_part_pkg_combo_mismatch",
+        source_format=SourceFormat.EASYEDA_PRO,
+        input_files=[],
+        components=[
+            Component(
+                refdes="U1",
+                value="",
+                source_name="STM32F030K6T6LQFP48",
+                package_id=None,
+                at=Point(0.0, 0.0),
+            )
+        ],
+    )
+
+    entries = [
+        LibraryEntry(
+            device_name="STM32F030K6T6",
+            package_name="QFN-32",
+            symbol_name="U",
+            component_class="ic",
+            add_token="st:STM32F030K6T6",
+        )
+    ]
+
+    ctx = LibraryMatcher().match(project, entries, match_mode=MatchMode.PACKAGE_FIRST)
+    assert ctx.summary.auto_matched == 0
+    assert ctx.summary.unresolved == 1
+    match = next(item for item in project.library_matches if item.refdes == "U1")
+    assert match.stage == "stage5_unresolved"
+
+
+def test_non_passive_part_number_partial_match_max98357_with_package_guard() -> None:
+    project = Project(
+        project_id="p_part_partial_max98357",
+        name="p_part_partial_max98357",
+        source_format=SourceFormat.EASYEDA_PRO,
+        input_files=[],
+        components=[
+            Component(
+                refdes="U1",
+                value="",
+                source_name="MAX98357AETE+T",
+                package_id=None,
+                attributes={"Footprint": "TQFN-16_EP-4.0X4.0X0.8"},
+                at=Point(0.0, 0.0),
+            )
+        ],
+    )
+
+    entries = [
+        LibraryEntry(
+            device_name="MAX98357AETE+",
+            package_name="TQFN-16",
+            symbol_name="AMP",
+            component_class="ic",
+            add_token="maxim:MAX98357AETE+",
+        )
+    ]
+
+    ctx = LibraryMatcher().match(project, entries, match_mode=MatchMode.PACKAGE_FIRST)
+    assert ctx.summary.auto_matched == 1
+    assert project.components[0].device_id == "maxim:MAX98357AETE+"
+
+
+def test_non_passive_part_number_partial_match_lmr14020_with_hsop_package() -> None:
+    project = Project(
+        project_id="p_part_partial_lmr14020",
+        name="p_part_partial_lmr14020",
+        source_format=SourceFormat.EASYEDA_PRO,
+        input_files=[],
+        components=[
+            Component(
+                refdes="U2",
+                value="",
+                source_name="LMR14020SDDAR",
+                package_id=None,
+                attributes={"Footprint": "HSOP-8_LMR14020"},
+                at=Point(0.0, 0.0),
+            )
+        ],
+    )
+
+    entries = [
+        LibraryEntry(
+            device_name="LMR14020",
+            package_name="HSOP-8",
+            symbol_name="REGULATOR",
+            component_class="ic",
+            add_token="ti:LMR14020",
+        )
+    ]
+
+    ctx = LibraryMatcher().match(project, entries, match_mode=MatchMode.PACKAGE_FIRST)
+    assert ctx.summary.auto_matched == 1
+    assert project.components[0].device_id == "ti:LMR14020"
+
+
+def test_non_passive_part_number_partial_match_s8050_with_package_guard() -> None:
+    project = Project(
+        project_id="p_part_partial_s8050",
+        name="p_part_partial_s8050",
+        source_format=SourceFormat.EASYEDA_PRO,
+        input_files=[],
+        components=[
+            Component(
+                refdes="Q1",
+                value="",
+                source_name="S8050M-D",
+                package_id=None,
+                attributes={"Footprint": "SOT-23"},
+                at=Point(0.0, 0.0),
+            )
+        ],
+    )
+
+    entries = [
+        LibraryEntry(
+            device_name="S8050",
+            package_name="SOT-23",
+            symbol_name="NPN",
+            component_class="transistor",
+            add_token="transistor-bjt:S8050",
+        )
+    ]
+
+    ctx = LibraryMatcher().match(project, entries, match_mode=MatchMode.PACKAGE_FIRST)
+    assert ctx.summary.auto_matched == 1
+    assert project.components[0].device_id == "transistor-bjt:S8050"
+
+
+def test_non_passive_partial_part_number_still_requires_package_match() -> None:
+    project = Project(
+        project_id="p_part_partial_pkg_guard",
+        name="p_part_partial_pkg_guard",
+        source_format=SourceFormat.EASYEDA_PRO,
+        input_files=[],
+        components=[
+            Component(
+                refdes="U3",
+                value="",
+                source_name="LMR14020SDDAR",
+                package_id=None,
+                attributes={"Footprint": "HSOP-8_LMR14020"},
+                at=Point(0.0, 0.0),
+            )
+        ],
+    )
+
+    entries = [
+        LibraryEntry(
+            device_name="LMR14020",
+            package_name="SOT-23",
+            symbol_name="REGULATOR",
+            component_class="ic",
+            add_token="ti:LMR14020_SOT23",
+        )
+    ]
+
+    ctx = LibraryMatcher().match(project, entries, match_mode=MatchMode.PACKAGE_FIRST)
+    assert ctx.summary.auto_matched == 0
+    assert project.components[0].device_id != "ti:LMR14020_SOT23"
+
+
+def test_non_passive_part_number_partial_match_accepts_encoded_qfn_package() -> None:
+    project = Project(
+        project_id="p_part_partial_max98357_encoded_pkg",
+        name="p_part_partial_max98357_encoded_pkg",
+        source_format=SourceFormat.EASYEDA_PRO,
+        input_files=[],
+        components=[
+            Component(
+                refdes="U1",
+                value="",
+                source_name="TQFN-16_L3.0-W3.0-P0.50-BL-EP1.5",
+                mpn="MAX98357AETE+T",
+                package_id=None,
+                attributes={"Footprint": "TQFN-16_L3.0-W3.0-P0.50-BL-EP1.5"},
+                at=Point(0.0, 0.0),
+            )
+        ],
+    )
+    entries = [
+        LibraryEntry(
+            device_name="MAX98357AETE+",
+            package_name="QFN50P300X300X80-17N",
+            symbol_name="MAX98357AETE+",
+            component_class="ic",
+            mpn="MAX98357AETE+",
+            add_token="samacsys_parts:MAX98357AETE+",
+        )
+    ]
+    ctx = LibraryMatcher().match(project, entries, match_mode=MatchMode.PACKAGE_FIRST)
+    assert ctx.summary.auto_matched == 1
+    assert project.components[0].device_id == "samacsys_parts:MAX98357AETE+"
+
+
+def test_non_passive_part_number_partial_match_accepts_encoded_soic_package() -> None:
+    project = Project(
+        project_id="p_part_partial_lmr_encoded_pkg",
+        name="p_part_partial_lmr_encoded_pkg",
+        source_format=SourceFormat.EASYEDA_PRO,
+        input_files=[],
+        components=[
+            Component(
+                refdes="U6",
+                value="",
+                source_name="HSOP-8_L5.0-W4.0-P1.27-LS6.2-BL-EP",
+                mpn="LMR14020SDDAR",
+                package_id=None,
+                attributes={"Footprint": "HSOP-8_L5.0-W4.0-P1.27-LS6.2-BL-EP"},
+                at=Point(0.0, 0.0),
+            )
+        ],
+    )
+    entries = [
+        LibraryEntry(
+            device_name="LMR14020SDDA",
+            package_name="SOIC127P600X170-9N",
+            symbol_name="LMR14020SDDA",
+            component_class="ic",
+            mpn="LMR14020SDDA",
+            add_token="samacsys_parts:LMR14020SDDA",
+        )
+    ]
+    ctx = LibraryMatcher().match(project, entries, match_mode=MatchMode.PACKAGE_FIRST)
+    assert ctx.summary.auto_matched == 1
+    assert project.components[0].device_id == "samacsys_parts:LMR14020SDDA"
+
+
+def test_non_passive_s8050_with_vendor_suffix_selects_external_candidate_without_prompt() -> None:
+    project = Project(
+        project_id="p_s8050_hy3d",
+        name="p_s8050_hy3d",
+        source_format=SourceFormat.EASYEDA_PRO,
+        input_files=[],
+        components=[
+            Component(
+                refdes="U23",
+                value="SOT-23-3_L3.0-W1.7-P0.95-LS2.9-BR",
+                source_name="SOT-23-3_L3.0-W1.7-P0.95-LS2.9-BR",
+                mpn="S8050M-D HY3D",
+                package_id=None,
+                attributes={"Footprint": "SOT-23-3_L3.0-W1.7-P0.95-LS2.9-BR"},
+                at=Point(0.0, 0.0),
+            )
+        ],
+    )
+    entries = [
+        LibraryEntry(
+            device_name="SMD-TRANSISTORS-NPN-25V-500MW-S8050(SOT-23)",
+            package_name="SOT-23",
+            symbol_name="S8050",
+            component_class="transistor",
+            mpn="S8050",
+            add_token="opl:S8050_A",
+        ),
+        LibraryEntry(
+            device_name="SMD-TRANSISTORS-NPN-25V-500MW-S8050(SOT-23)",
+            package_name="SOT-23",
+            symbol_name="S8050",
+            component_class="transistor",
+            mpn="S8050",
+            add_token="opl:S8050_B",
+        ),
+    ]
+    ctx = LibraryMatcher().match(project, entries, match_mode=MatchMode.PACKAGE_FIRST)
+    assert ctx.summary.auto_matched == 1
+    assert project.components[0].device_id in {"opl:S8050_A", "opl:S8050_B"}
+
+
+def test_non_passive_partial_match_with_large_noise_library_pool() -> None:
+    project = Project(
+        project_id="p_part_partial_large_noise_pool",
+        name="p_part_partial_large_noise_pool",
+        source_format=SourceFormat.EASYEDA_PRO,
+        input_files=[],
+        components=[
+            Component(
+                refdes="U6",
+                value="",
+                source_name="LMR14020SDDAR",
+                package_id=None,
+                attributes={"Footprint": "HSOP-8_L5.0-W4.0-P1.27-LS6.2-BL-EP"},
+                at=Point(0.0, 0.0),
+            )
+        ],
+    )
+
+    entries: list[LibraryEntry] = []
+    for idx in range(300):
+        entries.append(
+            LibraryEntry(
+                device_name=f"DUMMYIC{idx:04d}QFN",
+                package_name="QFN-32",
+                symbol_name=f"DUMMY{idx:04d}",
+                component_class="ic",
+                add_token=f"dummy_lib:DUMMYIC{idx:04d}QFN",
+            )
+        )
+
+    entries.append(
+        LibraryEntry(
+            device_name="LMR14020SDDA",
+            package_name="SOIC127P600X170-9N",
+            symbol_name="LMR14020SDDA",
+            component_class="ic",
+            mpn="LMR14020SDDA",
+            add_token="samacsys_parts:LMR14020SDDA",
+        )
+    )
+
+    ctx = LibraryMatcher().match(project, entries, match_mode=MatchMode.PACKAGE_FIRST)
+    assert ctx.summary.auto_matched == 1
+    assert project.components[0].device_id == "samacsys_parts:LMR14020SDDA"
+
+
+def test_lbr_loader_parses_named_html_entities_in_old_eagle_files(tmp_path) -> None:
+    lbr = tmp_path / "SamacSys_Parts.lbr"
+    lbr.write_text(
+        """<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE eagle SYSTEM "eagle.dtd">
+<eagle version="7.7.0">
+  <drawing>
+    <library>
+      <packages>
+        <package name="QFN50P300X300X80-17N"/>
+      </packages>
+      <symbols>
+        <symbol name="MAX98357AETE+"/>
+      </symbols>
+      <devicesets>
+        <deviceset name="MAX98357AETE+" prefix="IC">
+          <description>Size 3 &times; 3</description>
+          <gates>
+            <gate name="G$1" symbol="MAX98357AETE+" x="0" y="0"/>
+          </gates>
+          <devices>
+            <device name="" package="QFN50P300X300X80-17N">
+              <technologies>
+                <technology name="">
+                  <attribute name="MANUFACTURER_PART_NUMBER" value="MAX98357AETE+"/>
+                </technology>
+              </technologies>
+            </device>
+          </devices>
+        </deviceset>
+      </devicesets>
+    </library>
+  </drawing>
+</eagle>
+""",
+        encoding="utf-8",
+    )
+    entries = _entries_from_lbr_file(lbr)
+    assert entries
+    assert any(item.device_name == "MAX98357AETE+" for item in entries)
 
 
 def test_non_passive_stage2_package_class_uses_package_hints_not_only_package_id():
@@ -600,6 +1097,107 @@ def test_passive_external_match_with_board_still_falls_back_on_pitch_mismatch(tm
     assert ctx.summary.created_new_parts == 1
     assert project.components[0].device_id is not None
     assert project.components[0].device_id.startswith("easyeda_generated:")
+
+
+def test_external_match_with_board_accepts_rotated_origin_mismatch(tmp_path):
+    external_lbr = tmp_path / "ic_rotated.lbr"
+    external_lbr.write_text(
+        """<?xml version="1.0" encoding="utf-8"?>
+<eagle version="9.6.2">
+  <drawing>
+    <library>
+      <packages>
+        <package name="QFN4">
+          <smd name="1" x="-1.0" y="1.0" dx="0.5" dy="0.5" layer="1"/>
+          <smd name="2" x="-1.0" y="-1.0" dx="0.5" dy="0.5" layer="1"/>
+          <smd name="3" x="1.0" y="-1.0" dx="0.5" dy="0.5" layer="1"/>
+          <smd name="4" x="1.0" y="1.0" dx="0.5" dy="0.5" layer="1"/>
+        </package>
+      </packages>
+      <symbols>
+        <symbol name="U">
+          <pin name="1" x="-2.54" y="2.54"/>
+          <pin name="2" x="-2.54" y="-2.54"/>
+          <pin name="3" x="2.54" y="-2.54"/>
+          <pin name="4" x="2.54" y="2.54"/>
+        </symbol>
+      </symbols>
+      <devicesets>
+        <deviceset name="U4">
+          <gates><gate name="G$1" symbol="U" x="0" y="0"/></gates>
+          <devices>
+            <device name="" package="QFN4">
+              <connects>
+                <connect gate="G$1" pin="1" pad="1"/>
+                <connect gate="G$1" pin="2" pad="2"/>
+                <connect gate="G$1" pin="3" pad="3"/>
+                <connect gate="G$1" pin="4" pad="4"/>
+              </connects>
+              <technologies><technology name=""/></technologies>
+            </device>
+          </devices>
+        </deviceset>
+      </devicesets>
+    </library>
+  </drawing>
+</eagle>
+""",
+        encoding="utf-8",
+    )
+
+    project = Project(
+        project_id="p_board_rotated_origin",
+        name="p_board_rotated_origin",
+        source_format=SourceFormat.EASYEDA_PRO,
+        input_files=[],
+        components=[
+            Component(
+                refdes="U1",
+                value="",
+                source_name="U4",
+                package_id="QFN4",
+                at=Point(0.0, 0.0),
+            )
+        ],
+        packages=[
+            Package(
+                package_id="QFN4",
+                name="QFN4",
+                pads=[
+                    Pad(pad_number="1", at=Point(-1.0, -1.0), shape="rect", width_mm=0.5, height_mm=0.5, layer="top_copper"),
+                    Pad(pad_number="2", at=Point(1.0, -1.0), shape="rect", width_mm=0.5, height_mm=0.5, layer="top_copper"),
+                    Pad(pad_number="3", at=Point(1.0, 1.0), shape="rect", width_mm=0.5, height_mm=0.5, layer="top_copper"),
+                    Pad(pad_number="4", at=Point(-1.0, 1.0), shape="rect", width_mm=0.5, height_mm=0.5, layer="top_copper"),
+                ],
+            )
+        ],
+        board=Board(),
+    )
+
+    entries = [
+        LibraryEntry(
+            device_name="U4",
+            package_name="QFN4",
+            symbol_name="U",
+            component_class="ic",
+            library_name="iclib",
+            add_token="iclib:U4",
+            library_path=str(external_lbr),
+        )
+    ]
+
+    ctx = LibraryMatcher().match(project, entries, match_mode=MatchMode.AUTO)
+    assert ctx.summary.auto_matched == 1
+    assert ctx.summary.created_new_parts == 0
+    assert project.components[0].device_id == "iclib:U4"
+    assert float(project.components[0].attributes.get("_external_rotation_offset_deg", 0.0)) in {90.0, 270.0}
+    relaxed_events = [
+        event
+        for event in project.events
+        if event.code == "EXTERNAL_PACKAGE_GEOMETRY_RELAXED"
+    ]
+    assert len(relaxed_events) == 1
+    assert "relaxed_origin_only:pad_origin_mismatch" in str(relaxed_events[0].context.get("reason", ""))
 
 
 def test_passive_external_match_with_board_accepts_origin_only_mismatch_for_std(tmp_path):

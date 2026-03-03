@@ -14,6 +14,10 @@ PASSIVE_PACKAGE_DIMENSIONS_MM: dict[str, tuple[float, float]] = {
     "0805": (2.0, 1.25),
     "1206": (3.2, 1.6),
 }
+SYMBOL_PIN_PITCH_MM = 2.54
+SYMBOL_PIN_LEAD_MM = 2.54
+SYMBOL_MIN_BODY_HALF_W_MM = 5.08
+SYMBOL_MIN_BODY_HALF_H_MM = 3.81
 
 
 @dataclass
@@ -168,20 +172,6 @@ class LibraryBuilder:
         pin_meta_by_number = self._pin_metadata_for_component(component, package)
         used_pin_names: set[str] = set()
 
-        if len(pad_numbers) <= 2:
-            pins = []
-            allow_net_hint = True
-            for idx, pad_num in enumerate(pad_numbers):
-                pin_name = _resolve_pin_label(
-                    pad_number=pad_num,
-                    pin_meta=pin_meta_by_number.get(pad_num),
-                    pin_net_hints=pin_net_hints.get(pad_num, set()),
-                    used_pin_names=used_pin_names,
-                    allow_net_hint=allow_net_hint,
-                )
-                pins.append(SymbolPin(pin_number=pad_num, pin_name=pin_name, at=Point(x_mm=float(idx) * 5.08, y_mm=0.0)))
-            return Symbol(symbol_id=f"SYM_{component.refdes}", name=component.source_name, pins=pins)
-
         if _is_resistor_array_component(component):
             return self._resistor_array_symbol(
                 component=component,
@@ -191,17 +181,61 @@ class LibraryBuilder:
                 used_pin_names=used_pin_names,
             )
 
-        left_count = (len(pad_numbers) + 1) // 2
-        right_count = len(pad_numbers) - left_count
-        row_count = max(left_count, right_count)
-        pin_pitch = 2.54
-        body_half_w = 5.08
-        body_half_h = max(3.81, (row_count - 1) * pin_pitch / 2.0 + 1.27)
+        if _is_connector_component(component):
+            return self._connector_symbol(
+                component=component,
+                pad_numbers=pad_numbers,
+                pin_meta_by_number=pin_meta_by_number,
+                pin_net_hints=pin_net_hints,
+                used_pin_names=used_pin_names,
+            )
+
+        if len(pad_numbers) <= 2:
+            pins = []
+            for idx, pad_num in enumerate(pad_numbers):
+                pin_name = _resolve_pin_label(
+                    pad_number=pad_num,
+                    pin_meta=pin_meta_by_number.get(pad_num),
+                    pin_net_hints=pin_net_hints.get(pad_num, set()),
+                    used_pin_names=used_pin_names,
+                    allow_net_hint=True,
+                )
+                pins.append(
+                    SymbolPin(
+                        pin_number=pad_num,
+                        pin_name=pin_name,
+                        at=Point(x_mm=float(idx) * 5.08, y_mm=0.0),
+                    )
+                )
+            return Symbol(symbol_id=f"SYM_{component.refdes}", name=component.source_name, pins=pins)
+
+        return self._two_side_box_symbol(
+            component=component,
+            pad_numbers=pad_numbers,
+            pin_meta_by_number=pin_meta_by_number,
+            pin_net_hints=pin_net_hints,
+            used_pin_names=used_pin_names,
+        )
+
+    def _connector_symbol(
+        self,
+        component: Component,
+        pad_numbers: list[str],
+        pin_meta_by_number: dict[str, dict[str, str]],
+        pin_net_hints: dict[str, set[str]],
+        used_pin_names: set[str],
+    ) -> Symbol:
+        pin_pitch = SYMBOL_PIN_PITCH_MM
+        body_half_w = SYMBOL_MIN_BODY_HALF_W_MM
+        body_half_h = max(
+            SYMBOL_MIN_BODY_HALF_H_MM,
+            (max(len(pad_numbers), 1) - 1) * pin_pitch / 2.0 + 1.27,
+        )
+        pin_x = -body_half_w - SYMBOL_PIN_LEAD_MM
 
         pins: list[SymbolPin] = []
-        left_y_start = body_half_h
-        for idx, pad_num in enumerate(pad_numbers[:left_count]):
-            y = left_y_start - idx * pin_pitch
+        for idx, pad_num in enumerate(pad_numbers):
+            y = _centered_positions(len(pad_numbers), pin_pitch)[idx]
             pin_name = _resolve_pin_label(
                 pad_number=pad_num,
                 pin_meta=pin_meta_by_number.get(pad_num),
@@ -209,31 +243,81 @@ class LibraryBuilder:
                 used_pin_names=used_pin_names,
                 allow_net_hint=True,
             )
-            pins.append(SymbolPin(pin_number=pad_num, pin_name=pin_name, at=Point(x_mm=-body_half_w, y_mm=y)))
+            # Connector symbols conventionally present pins on a single side.
+            pins.append(SymbolPin(pin_number=pad_num, pin_name=pin_name, at=Point(x_mm=pin_x, y_mm=y)))
 
-        right_y_start = body_half_h
-        for idx, pad_num in enumerate(pad_numbers[left_count:]):
-            y = right_y_start - idx * pin_pitch
-            pin_name = _resolve_pin_label(
-                pad_number=pad_num,
-                pin_meta=pin_meta_by_number.get(pad_num),
-                pin_net_hints=pin_net_hints.get(pad_num, set()),
-                used_pin_names=used_pin_names,
-                allow_net_hint=True,
-            )
-            pins.append(SymbolPin(pin_number=pad_num, pin_name=pin_name, at=Point(x_mm=body_half_w, y_mm=y)))
-
-        graphics = [
-            {"kind": "wire", "x1_mm": -body_half_w, "y1_mm": -body_half_h, "x2_mm": body_half_w, "y2_mm": -body_half_h},
-            {"kind": "wire", "x1_mm": body_half_w, "y1_mm": -body_half_h, "x2_mm": body_half_w, "y2_mm": body_half_h},
-            {"kind": "wire", "x1_mm": body_half_w, "y1_mm": body_half_h, "x2_mm": -body_half_w, "y2_mm": body_half_h},
-            {"kind": "wire", "x1_mm": -body_half_w, "y1_mm": body_half_h, "x2_mm": -body_half_w, "y2_mm": -body_half_h},
-        ]
         return Symbol(
             symbol_id=f"SYM_{component.refdes}",
             name=component.source_name,
             pins=pins,
-            graphics=graphics,
+            graphics=_box_graphics(body_half_w, body_half_h),
+        )
+
+    def _two_side_box_symbol(
+        self,
+        component: Component,
+        pad_numbers: list[str],
+        pin_meta_by_number: dict[str, dict[str, str]],
+        pin_net_hints: dict[str, set[str]],
+        used_pin_names: set[str],
+    ) -> Symbol:
+        pin_count = len(pad_numbers)
+        pin_pitch = SYMBOL_PIN_PITCH_MM
+        left_count = (pin_count + 1) // 2
+        right_count = pin_count - left_count
+
+        vertical_rows = max(left_count, right_count, 1)
+        body_half_h = max(
+            SYMBOL_MIN_BODY_HALF_H_MM,
+            (vertical_rows - 1) * pin_pitch / 2.0 + 1.27,
+        )
+        body_half_w = SYMBOL_MIN_BODY_HALF_W_MM
+
+        left_positions = _centered_positions(left_count, pin_pitch)
+        right_positions = _centered_positions(right_count, pin_pitch)
+
+        pins: list[SymbolPin] = []
+        index = 0
+        for offset in left_positions:
+            pad_num = pad_numbers[index]
+            index += 1
+            pin_name = _resolve_pin_label(
+                pad_number=pad_num,
+                pin_meta=pin_meta_by_number.get(pad_num),
+                pin_net_hints=pin_net_hints.get(pad_num, set()),
+                used_pin_names=used_pin_names,
+                allow_net_hint=True,
+            )
+            pins.append(
+                SymbolPin(
+                    pin_number=pad_num,
+                    pin_name=pin_name,
+                    at=Point(x_mm=-body_half_w - SYMBOL_PIN_LEAD_MM, y_mm=offset),
+                )
+            )
+        for offset in right_positions:
+            pad_num = pad_numbers[index]
+            index += 1
+            pin_name = _resolve_pin_label(
+                pad_number=pad_num,
+                pin_meta=pin_meta_by_number.get(pad_num),
+                pin_net_hints=pin_net_hints.get(pad_num, set()),
+                used_pin_names=used_pin_names,
+                allow_net_hint=True,
+            )
+            pins.append(
+                SymbolPin(
+                    pin_number=pad_num,
+                    pin_name=pin_name,
+                    at=Point(x_mm=body_half_w + SYMBOL_PIN_LEAD_MM, y_mm=offset),
+                )
+            )
+
+        return Symbol(
+            symbol_id=f"SYM_{component.refdes}",
+            name=component.source_name,
+            pins=pins,
+            graphics=_box_graphics(body_half_w, body_half_h),
         )
 
     def _resistor_array_symbol(
@@ -247,9 +331,9 @@ class LibraryBuilder:
         left_count = (len(pad_numbers) + 1) // 2
         right_count = len(pad_numbers) - left_count
         row_count = max(left_count, right_count)
-        pin_pitch = 2.54
+        pin_pitch = SYMBOL_PIN_PITCH_MM
         body_half_w = 6.35
-        body_half_h = max(3.81, (row_count - 1) * pin_pitch / 2.0 + 1.27)
+        body_half_h = max(SYMBOL_MIN_BODY_HALF_H_MM, (row_count - 1) * pin_pitch / 2.0 + 1.27)
 
         left_pads = pad_numbers[:left_count]
         right_pads = pad_numbers[left_count:]
@@ -267,7 +351,13 @@ class LibraryBuilder:
                 used_pin_names=used_pin_names,
                 allow_net_hint=True,
             )
-            pins.append(SymbolPin(pin_number=pad_num, pin_name=pin_name, at=Point(x_mm=-body_half_w, y_mm=y)))
+            pins.append(
+                SymbolPin(
+                    pin_number=pad_num,
+                    pin_name=pin_name,
+                    at=Point(x_mm=-body_half_w - SYMBOL_PIN_LEAD_MM, y_mm=y),
+                )
+            )
 
         right_y_start = body_half_h
         right_y_positions: list[float] = []
@@ -281,14 +371,15 @@ class LibraryBuilder:
                 used_pin_names=used_pin_names,
                 allow_net_hint=True,
             )
-            pins.append(SymbolPin(pin_number=pad_num, pin_name=pin_name, at=Point(x_mm=body_half_w, y_mm=y)))
+            pins.append(
+                SymbolPin(
+                    pin_number=pad_num,
+                    pin_name=pin_name,
+                    at=Point(x_mm=body_half_w + SYMBOL_PIN_LEAD_MM, y_mm=y),
+                )
+            )
 
-        graphics = [
-            {"kind": "wire", "x1_mm": -body_half_w, "y1_mm": -body_half_h, "x2_mm": body_half_w, "y2_mm": -body_half_h},
-            {"kind": "wire", "x1_mm": body_half_w, "y1_mm": -body_half_h, "x2_mm": body_half_w, "y2_mm": body_half_h},
-            {"kind": "wire", "x1_mm": body_half_w, "y1_mm": body_half_h, "x2_mm": -body_half_w, "y2_mm": body_half_h},
-            {"kind": "wire", "x1_mm": -body_half_w, "y1_mm": body_half_h, "x2_mm": -body_half_w, "y2_mm": -body_half_h},
-        ]
+        graphics = _box_graphics(body_half_w, body_half_h)
 
         pair_count = min(len(left_y_positions), len(right_y_positions))
         for idx in range(pair_count):
@@ -431,6 +522,22 @@ def _pin_sort_key(pin: str) -> tuple[int, int, str]:
     if match:
         return (1, int(match.group(2)), match.group(1))
     return (2, 0, text)
+
+
+def _box_graphics(body_half_w: float, body_half_h: float) -> list[dict[str, float | str]]:
+    return [
+        {"kind": "wire", "x1_mm": -body_half_w, "y1_mm": -body_half_h, "x2_mm": body_half_w, "y2_mm": -body_half_h},
+        {"kind": "wire", "x1_mm": body_half_w, "y1_mm": -body_half_h, "x2_mm": body_half_w, "y2_mm": body_half_h},
+        {"kind": "wire", "x1_mm": body_half_w, "y1_mm": body_half_h, "x2_mm": -body_half_w, "y2_mm": body_half_h},
+        {"kind": "wire", "x1_mm": -body_half_w, "y1_mm": body_half_h, "x2_mm": -body_half_w, "y2_mm": -body_half_h},
+    ]
+
+
+def _centered_positions(count: int, pitch: float) -> list[float]:
+    if count <= 0:
+        return []
+    half_index = (count - 1) / 2.0
+    return [(half_index - idx) * pitch for idx in range(count)]
 
 
 def _resolve_pin_label(
@@ -577,3 +684,38 @@ def _is_resistor_array_component(component: Component) -> bool:
     if re.search(r"\bRN[-_ ]?\d+\b", blob):
         return True
     return ref.startswith(("RN", "RA"))
+
+
+def _is_connector_component(component: Component) -> bool:
+    attrs = component.attributes if isinstance(component.attributes, dict) else {}
+    explicit = str(attrs.get("component_class") or "").strip().lower()
+    if explicit == "connector":
+        return True
+
+    ref = str(component.refdes or "").upper()
+    if ref.startswith(("J", "CN", "HDR")):
+        return True
+
+    blob = " ".join(
+        str(item or "").upper()
+        for item in (
+            component.source_name,
+            component.package_id,
+            attrs.get("Name"),
+            attrs.get("Device"),
+            attrs.get("Footprint"),
+            attrs.get("Package"),
+        )
+    )
+    connector_markers = (
+        "CONN",
+        "CONNECTOR",
+        "HEADER",
+        "JST",
+        "TERMINAL",
+        "SCREWTERMINAL",
+        "PINHD",
+        "USB",
+        "RJ45",
+    )
+    return any(marker in blob for marker in connector_markers)

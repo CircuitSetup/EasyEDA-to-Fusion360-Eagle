@@ -27,7 +27,7 @@ def emit_project_artifacts(project: Project, out_dir: Path) -> dict[str, Path]:
     project_stub = out_dir / f"{project_name}.eagle_project.txt"
     with project_stub.open("w", encoding="utf-8") as f:
         f.write("This converter emits conservative EAGLE scaffold files and reconstruction scripts.\n")
-        f.write("Use scripts/rebuild_project.scr to reconstruct full schematic and board intent.\n")
+        f.write("Use scripts/rebuild_schematic.scr and scripts/rebuild_board.scr to reconstruct full intent.\n")
         f.write(f"Project: {project.name}\n")
         f.write(f"Source format: {project.source_format.value}\n")
         f.write(f"Schematic scaffold: {schematic_path.name}\n")

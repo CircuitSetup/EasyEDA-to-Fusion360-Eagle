@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass, field
+import html
 import math
 from pathlib import Path
 import re
@@ -8,7 +10,7 @@ from typing import Callable, List, Optional
 import xml.etree.ElementTree as ET
 
 from easyeda2fusion.builders.library_builder import GeneratedLibraryPart, LibraryBuilder
-from easyeda2fusion.builders.board_reconstruction import _build_track_net_aliases
+from easyeda2fusion.builders.board_reconstruction import _project_track_net_aliases
 from easyeda2fusion.model import Component, LibraryMatch, MatchMode, Package, Project, Severity, Side, project_event
 
 
@@ -62,6 +64,36 @@ class _ExternalPadGeometry:
     drill_mm: float | None = None
 
 
+@dataclass(frozen=True)
+class _ExternalGeometryTransform:
+    offset_x_mm: float
+    offset_y_mm: float
+    rotation_deg: int = 0
+
+
+@dataclass(frozen=True)
+class _LibraryEntryFeature:
+    entry: LibraryEntry
+    norm_device_name: str
+    norm_package_name: str
+    norm_component_class: str
+    norm_mpn: str
+    norm_aliases: tuple[str, ...]
+    package_variants: frozenset[str]
+    part_number_keys: frozenset[str]
+    mpn_part_number_keys: frozenset[str]
+
+
+@dataclass
+class _LibraryEntryIndex:
+    features: list[_LibraryEntryFeature]
+    by_norm_mpn: dict[str, list[_LibraryEntryFeature]]
+    by_norm_device_name: dict[str, list[_LibraryEntryFeature]]
+    by_norm_alias: dict[str, list[_LibraryEntryFeature]]
+    by_part_number_key: dict[str, list[_LibraryEntryFeature]]
+    by_norm_component_class: dict[str, list[_LibraryEntryFeature]]
+
+
 AmbiguityResolver = Callable[[Component, List[LibraryEntry]], Optional[LibraryEntry]]
 
 
@@ -80,6 +112,7 @@ class LibraryMatcher:
         ctx = MatchContext()
         self._builder.configure(project.metadata if isinstance(project.metadata, dict) else {})
         preferred_paths_by_class = _normalize_library_preference_paths(preferred_library_paths_by_class or {})
+        entry_index = _build_library_entry_index(library_entries)
         package_lookup: dict[str, Package] = {}
         for pkg in project.packages:
             package_lookup[pkg.package_id] = pkg
@@ -98,19 +131,20 @@ class LibraryMatcher:
             selected: LibraryEntry | None = None
             selected_stage: str | None = None
             staged_candidates: list[LibraryEntry] = []
-            is_passive = _component_class(component) in {"resistor", "capacitor"}
+            component_class = _component_class(component)
+            is_passive = component_class in {"resistor", "capacitor"}
 
             stage_order: list[tuple[str, list[LibraryEntry]]] = []
             if match_mode == MatchMode.PACKAGE_FIRST and is_passive:
-                stage_order.append(("stage2_package_class", self._stage2_package_and_class(component, library_entries)))
-                stage_order.append(("stage1_exact", self._stage1_exact(component, library_entries)))
-                stage_order.append(("stage1_part_number", self._stage1_part_number(component, library_entries)))
+                stage_order.append(("stage2_package_class", self._stage2_package_and_class(component, entry_index)))
+                stage_order.append(("stage1_exact", self._stage1_exact(component, entry_index)))
+                stage_order.append(("stage1_part_number", self._stage1_part_number(component, entry_index)))
             else:
-                stage_order.append(("stage1_exact", self._stage1_exact(component, library_entries)))
-                stage_order.append(("stage1_part_number", self._stage1_part_number(component, library_entries)))
+                stage_order.append(("stage1_exact", self._stage1_exact(component, entry_index)))
+                stage_order.append(("stage1_part_number", self._stage1_part_number(component, entry_index)))
                 if match_mode != MatchMode.STRICT:
                     stage_order.append(
-                        ("stage2_package_class", self._stage2_package_and_class(component, library_entries))
+                        ("stage2_package_class", self._stage2_package_and_class(component, entry_index))
                     )
 
             for stage_name, candidates in stage_order:
@@ -123,11 +157,10 @@ class LibraryMatcher:
                     selected_stage = stage_name
                 else:
                     stage_selected = _prefer_stage_candidate(component, candidates, stage_name)
-                    class_name = _component_class(component)
                     passive_selected = _prefer_passive_external_candidate(
                         component,
                         candidates,
-                        preferred_paths=preferred_paths_by_class.get(class_name, set()),
+                        preferred_paths=preferred_paths_by_class.get(component_class, set()),
                     )
                     if stage_selected is not None:
                         selected = stage_selected
@@ -156,17 +189,33 @@ class LibraryMatcher:
                 if selected.add_token:
                     source_package = _resolve_component_package(component, package_lookup)
                     forced_local_reason = _force_local_passive_reason(component, source_package)
-                    if forced_local_reason:
-                        compatible_external = False
-                        compatibility_reason = forced_local_reason
-                    else:
-                        compatible_external, compatibility_reason = _external_package_match_is_compatible(
-                            component=component,
-                            selected=selected,
-                            source_package=source_package,
-                            cache=external_package_cache,
-                            strict_board_fidelity=project.board is not None,
-                        )
+                    selected_for_external = selected
+                    compatible_external = False
+                    compatibility_reason = forced_local_reason
+                    external_candidates: list[LibraryEntry] = [selected]
+                    external_candidates.extend(
+                        candidate
+                        for candidate in staged_candidates
+                        if candidate is not selected and candidate.add_token
+                    )
+
+                    if not forced_local_reason:
+                        for candidate in external_candidates:
+                            is_compatible, reason = _external_package_match_is_compatible(
+                                component=component,
+                                selected=candidate,
+                                source_package=source_package,
+                                cache=external_package_cache,
+                                strict_board_fidelity=project.board is not None,
+                            )
+                            if is_compatible and _is_safe_external_add_token(str(candidate.add_token or "")):
+                                selected_for_external = candidate
+                                compatible_external = True
+                                compatibility_reason = reason
+                                break
+                            if candidate is selected and compatibility_reason is None:
+                                compatibility_reason = reason
+                    selected = selected_for_external
                     if not compatible_external:
                         project.events.append(
                             project_event(
@@ -408,24 +457,44 @@ class LibraryMatcher:
         _merge_equivalent_generated_parts(project, ctx)
         return ctx
 
-    def _stage1_exact(self, component: Component, entries: list[LibraryEntry]) -> list[LibraryEntry]:
+    def _stage1_exact(self, component: Component, entry_index: _LibraryEntryIndex) -> list[LibraryEntry]:
         mpn = _norm(component.mpn)
         src_name = _norm(component.source_name)
         package = _norm(component.package_id)
         class_name = _component_class(component)
         results: list[LibraryEntry] = []
+        seen: set[int] = set()
 
-        for entry in entries:
-            mpn_match = bool(mpn and _norm(entry.mpn) == mpn and class_name not in {"resistor", "capacitor"})
-            name_match = _norm(entry.device_name) == src_name
-            alias_match = src_name and any(_norm(alias) == src_name for alias in entry.aliases)
-            package_match = package and _norm(entry.package_name) == package
-            if mpn_match or (name_match and package_match) or (alias_match and package_match):
-                results.append(entry)
+        if mpn and class_name not in {"resistor", "capacitor"}:
+            for feature in entry_index.by_norm_mpn.get(mpn, []):
+                entry_id = id(feature.entry)
+                if entry_id in seen:
+                    continue
+                seen.add(entry_id)
+                results.append(feature.entry)
+
+        if src_name and package:
+            for feature in entry_index.by_norm_device_name.get(src_name, []):
+                if feature.norm_package_name != package:
+                    continue
+                entry_id = id(feature.entry)
+                if entry_id in seen:
+                    continue
+                seen.add(entry_id)
+                results.append(feature.entry)
+
+            for feature in entry_index.by_norm_alias.get(src_name, []):
+                if feature.norm_package_name != package:
+                    continue
+                entry_id = id(feature.entry)
+                if entry_id in seen:
+                    continue
+                seen.add(entry_id)
+                results.append(feature.entry)
 
         return results
 
-    def _stage1_part_number(self, component: Component, entries: list[LibraryEntry]) -> list[LibraryEntry]:
+    def _stage1_part_number(self, component: Component, entry_index: _LibraryEntryIndex) -> list[LibraryEntry]:
         class_name = _component_class(component)
         if class_name in {"resistor", "capacitor"}:
             return []
@@ -436,13 +505,28 @@ class LibraryMatcher:
         if not component_parts:
             return []
 
+        package_keys, package_variants = _non_passive_part_match_package_requirements(component)
+        # Non-passive part-number matching requires package compatibility evidence.
+        if not package_keys and not package_variants:
+            return []
+
+        candidate_features: dict[int, _LibraryEntryFeature] = {}
+        for token in component_parts:
+            for feature in entry_index.by_part_number_key.get(token, []):
+                candidate_features[id(feature.entry)] = feature
+        if not candidate_features:
+            return []
+
         scored: list[tuple[int, LibraryEntry]] = []
-        package_keys = _component_package_keys(component)
-        package_variants = _component_package_variants(component)
-        for entry in entries:
-            score = _part_number_match_score(component_parts, entry, package_keys, package_variants)
+        for feature in candidate_features.values():
+            score = _part_number_match_score_from_feature(
+                component_parts,
+                feature,
+                package_keys,
+                package_variants,
+            )
             if score > 0:
-                scored.append((score, entry))
+                scored.append((score, feature.entry))
 
         if not scored:
             return []
@@ -450,32 +534,44 @@ class LibraryMatcher:
         best_score = max(item[0] for item in scored)
         return [entry for score, entry in scored if score == best_score]
 
-    def _stage2_package_and_class(self, component: Component, entries: list[LibraryEntry]) -> list[LibraryEntry]:
+    def _stage2_package_and_class(self, component: Component, entry_index: _LibraryEntryIndex) -> list[LibraryEntry]:
         class_name = _component_class(component)
         if class_name == "connector" and _is_screw_terminal_component(component):
-            screw_candidates = _stage2_screw_terminal(component, entries)
+            screw_candidates = _stage2_screw_terminal(
+                component,
+                [feature.entry for feature in entry_index.features],
+            )
             if screw_candidates:
                 return screw_candidates
 
         package_keys = _component_package_keys(component)
         package_variants = _component_package_variants(component)
+        class_norm = _norm(class_name)
         results: list[LibraryEntry] = []
-        for entry in entries:
-            entry_package = _norm(entry.package_name)
-            entry_variants = _package_variants(entry.package_name)
-            entry_class = _norm(entry.component_class)
+        if class_name in {"resistor", "capacitor"}:
+            candidate_features = [
+                *entry_index.by_norm_component_class.get(class_norm, []),
+                *entry_index.by_norm_component_class.get("", []),
+            ]
+        else:
+            candidate_features = entry_index.features
+
+        for feature in candidate_features:
+            entry_package = feature.norm_package_name
+            entry_variants = feature.package_variants
+            entry_class = feature.norm_component_class
             package_ok = bool(entry_package and entry_package in package_keys)
             if not package_ok and package_variants and entry_variants:
                 package_ok = bool(package_variants.intersection(entry_variants))
             if not package_ok and package_keys and entry_package:
                 package_ok = any(key in entry_package or entry_package in key for key in package_keys)
-            class_ok = bool(class_name and entry_class == _norm(class_name))
+            class_ok = bool(class_name and entry_class == class_norm)
             if class_name in {"resistor", "capacitor"} and not class_ok:
                 continue
-            if package_ok and (class_ok or not entry.component_class):
-                results.append(entry)
+            if package_ok and (class_ok or not feature.entry.component_class):
+                results.append(feature.entry)
             elif class_ok and package_ok:
-                results.append(entry)
+                results.append(feature.entry)
         return results
 
     def _resolve_ambiguity(
@@ -515,6 +611,61 @@ def _norm(value: str | None) -> str:
     return "".join(ch for ch in str(value).upper() if ch.isalnum())
 
 
+def _build_library_entry_index(entries: list[LibraryEntry]) -> _LibraryEntryIndex:
+    features: list[_LibraryEntryFeature] = []
+    by_norm_mpn: dict[str, list[_LibraryEntryFeature]] = defaultdict(list)
+    by_norm_device_name: dict[str, list[_LibraryEntryFeature]] = defaultdict(list)
+    by_norm_alias: dict[str, list[_LibraryEntryFeature]] = defaultdict(list)
+    by_part_number_key: dict[str, list[_LibraryEntryFeature]] = defaultdict(list)
+    by_norm_component_class: dict[str, list[_LibraryEntryFeature]] = defaultdict(list)
+
+    for entry in entries:
+        norm_device_name = _norm(entry.device_name)
+        norm_package_name = _norm(entry.package_name)
+        norm_component_class = _norm(entry.component_class)
+        norm_mpn = _norm(entry.mpn)
+        norm_aliases = tuple(
+            alias
+            for alias in (_norm(item) for item in entry.aliases)
+            if alias
+        )
+        package_variants = frozenset(_package_variants(entry.package_name))
+        part_number_keys = frozenset(_entry_part_number_keys(entry))
+        mpn_part_number_keys = frozenset(_part_number_variants(str(entry.mpn or "")))
+
+        feature = _LibraryEntryFeature(
+            entry=entry,
+            norm_device_name=norm_device_name,
+            norm_package_name=norm_package_name,
+            norm_component_class=norm_component_class,
+            norm_mpn=norm_mpn,
+            norm_aliases=norm_aliases,
+            package_variants=package_variants,
+            part_number_keys=part_number_keys,
+            mpn_part_number_keys=mpn_part_number_keys,
+        )
+        features.append(feature)
+
+        if norm_mpn:
+            by_norm_mpn[norm_mpn].append(feature)
+        if norm_device_name:
+            by_norm_device_name[norm_device_name].append(feature)
+        for alias in norm_aliases:
+            by_norm_alias[alias].append(feature)
+        for key in part_number_keys:
+            by_part_number_key[key].append(feature)
+        by_norm_component_class[norm_component_class].append(feature)
+
+    return _LibraryEntryIndex(
+        features=features,
+        by_norm_mpn=dict(by_norm_mpn),
+        by_norm_device_name=dict(by_norm_device_name),
+        by_norm_alias=dict(by_norm_alias),
+        by_part_number_key=dict(by_part_number_key),
+        by_norm_component_class=dict(by_norm_component_class),
+    )
+
+
 def _package_variants(value: str | None) -> set[str]:
     base = _norm(value)
     if not base:
@@ -538,6 +689,9 @@ def _package_variants(value: str | None) -> set[str]:
         r"(SOT[-_ ]?23(?:[-_ ]?\d+)?)",
         r"(SOT[-_ ]?223)",
         r"(SOT[-_ ]?89)",
+        r"(HSOP[-_ ]?\d+)",
+        r"(HSSOP[-_ ]?\d+)",
+        r"(SOP[-_ ]?\d+)",
         r"(SOD[-_ ]?\d+)",
         r"(DO[-_ ]?214[A-Z]*)",
         r"(SMA)",
@@ -559,6 +713,10 @@ def _package_variants(value: str | None) -> set[str]:
         match = re.search(pattern, normalized)
         if match:
             variants.add(_norm(match.group(1)))
+
+    family_token = _package_family_token(base)
+    if family_token:
+        variants.add(family_token)
 
     pitch = _extract_pitch_mm(value)
     if pitch is not None:
@@ -648,24 +806,12 @@ def _component_package_hints(component: Component) -> list[str]:
 
 
 def _component_part_number_keys(component: Component) -> set[str]:
-    raw_values: list[str] = []
-    for raw in (
-        component.mpn,
-        component.attributes.get("MPN"),
-        component.attributes.get("Manufacturer Part"),
-        component.attributes.get("Manufacturer Part Number"),
-        component.attributes.get("Mfr Part Number"),
-        component.attributes.get("Part Number"),
-        component.attributes.get("part_number"),
-        component.attributes.get("manufacturer_part"),
-        component.source_name,
-    ):
-        text = str(raw or "").strip()
-        if text:
-            raw_values.append(text)
-
     keys: set[str] = set()
-    for value in raw_values:
+    for value in _component_part_number_raw_values(component):
+        split_parts, _ = _split_combined_part_number_and_package(value)
+        for split_part in split_parts:
+            keys.update(_part_number_variants(split_part))
+
         if not _looks_like_part_number(value):
             continue
         keys.update(_part_number_variants(value))
@@ -682,6 +828,55 @@ def _entry_part_number_keys(entry: LibraryEntry) -> set[str]:
             continue
         keys.update(_part_number_variants(text))
     return keys
+
+
+def _component_part_number_raw_values(component: Component) -> list[str]:
+    raw_values: list[str] = []
+    for raw in (
+        component.mpn,
+        component.attributes.get("MPN"),
+        component.attributes.get("Manufacturer Part"),
+        component.attributes.get("Manufacturer Part Number"),
+        component.attributes.get("Mfr Part Number"),
+        component.attributes.get("Part Number"),
+        component.attributes.get("part_number"),
+        component.attributes.get("manufacturer_part"),
+        component.source_name,
+        component.attributes.get("Name"),
+        component.attributes.get("Device"),
+    ):
+        text = str(raw or "").strip()
+        if text:
+            raw_values.append(text)
+    return raw_values
+
+
+def _non_passive_part_match_package_requirements(component: Component) -> tuple[set[str], set[str]]:
+    hints: list[str] = []
+    for raw in (
+        component.package_id,
+        component.attributes.get("Footprint"),
+        component.attributes.get("Package"),
+        component.attributes.get("footprint"),
+        component.attributes.get("package"),
+        component.attributes.get("package_name"),
+    ):
+        text = str(raw or "").strip()
+        if text:
+            hints.append(text)
+
+    for value in _component_part_number_raw_values(component):
+        _, extracted_packages = _split_combined_part_number_and_package(value)
+        hints.extend(sorted(extracted_packages))
+
+    package_keys: set[str] = set()
+    package_variants: set[str] = set()
+    for hint in hints:
+        normalized = _norm(hint)
+        if normalized:
+            package_keys.add(normalized)
+        package_variants.update(_package_variants(hint))
+    return package_keys, package_variants
 
 
 def _part_number_match_score(
@@ -722,6 +917,44 @@ def _part_number_match_score(
     return score
 
 
+def _part_number_match_score_from_feature(
+    component_parts: set[str],
+    feature: _LibraryEntryFeature,
+    package_keys: set[str],
+    package_variants: set[str],
+) -> int:
+    common = component_parts.intersection(feature.part_number_keys)
+    if not common:
+        return 0
+
+    score = 0
+    longest = max(len(token) for token in common)
+    if longest >= 12:
+        score += 4
+    elif longest >= 8:
+        score += 3
+    else:
+        score += 2
+
+    if feature.norm_mpn and feature.mpn_part_number_keys.intersection(component_parts):
+        score += 3
+
+    if package_keys:
+        if not _package_compatible(
+            feature.norm_package_name,
+            set(feature.package_variants),
+            package_keys,
+            package_variants,
+        ):
+            return 0
+        score += 2
+
+    if feature.entry.add_token:
+        score += 1
+
+    return score
+
+
 def _part_number_variants(value: str) -> set[str]:
     text = str(value or "").strip().upper()
     if not text:
@@ -742,8 +975,67 @@ def _part_number_variants(value: str) -> set[str]:
         token_norm = _norm(token)
         if len(token_norm) >= 6:
             variants.add(token_norm)
+            variants.update(_reduced_part_number_variants(token_norm))
+
+    variants.update(_reduced_part_number_variants(normalized))
 
     return variants
+
+
+def _reduced_part_number_variants(normalized: str) -> set[str]:
+    variants: set[str] = set()
+    token = str(normalized or "").strip().upper()
+    if not token:
+        return variants
+
+    # Keep near-exact forms by trimming one trailing alpha package/order code.
+    if token[-1:].isalpha():
+        one_step = token[:-1]
+        if one_step and _looks_like_part_number(one_step):
+            variants.add(one_step)
+
+    # Include base core by trimming a trailing alpha suffix block (e.g.
+    # LMR14020SDDAR -> LMR14020, S8050MD -> S8050).
+    trimmed_all = re.sub(r"[A-Z]+$", "", token)
+    if trimmed_all and trimmed_all != token and _looks_like_part_number(trimmed_all):
+        variants.add(trimmed_all)
+
+    return variants
+
+
+def _split_combined_part_number_and_package(value: str) -> tuple[set[str], set[str]]:
+    text = str(value or "").strip().upper()
+    if not text:
+        return set(), set()
+
+    normalized = _norm(text)
+    if not normalized:
+        return set(), set()
+
+    package_tokens = sorted(
+        {
+            token
+            for token in _package_variants(text)
+            if _is_structured_package_variant(token)
+        },
+        key=len,
+        reverse=True,
+    )
+    if not package_tokens:
+        return set(), set()
+
+    part_tokens: set[str] = set()
+    package_hints: set[str] = set(package_tokens)
+    for package_token in package_tokens:
+        if normalized.endswith(package_token) and len(normalized) - len(package_token) >= 5:
+            part = normalized[: -len(package_token)]
+            if _looks_like_part_number(part):
+                part_tokens.add(part)
+        if normalized.startswith(package_token) and len(normalized) - len(package_token) >= 5:
+            part = normalized[len(package_token) :]
+            if _looks_like_part_number(part):
+                part_tokens.add(part)
+    return part_tokens, package_hints
 
 
 def _looks_like_part_number(value: str) -> bool:
@@ -769,6 +1061,18 @@ def _looks_like_part_number(value: str) -> bool:
     return True
 
 
+def _is_structured_package_variant(token: str) -> bool:
+    text = _norm(token)
+    if not text:
+        return False
+    return bool(
+        re.fullmatch(
+            r"(SOT\d+|SOD\d+|DO214[A-Z]*|SMA|SMB|SMC|HSOP\d+|HSSOP\d+|SOP\d+|MSOP\d+|SSOP\d+|TSOP\d+|SOIC\d+|TSSOP\d+|QFN\d+|LQFP\d+|QFP\d+|DIP\d+|TO92|TO220|DFN\d+|TQFN\d+|BGA\d+)",
+            text,
+        )
+    )
+
+
 def _prefer_stage_candidate(
     component: Component,
     candidates: list[LibraryEntry],
@@ -781,8 +1085,10 @@ def _prefer_stage_candidate(
         return None
 
     component_parts = _component_part_number_keys(component)
-    package_keys = _component_package_keys(component)
+    package_keys, component_variants = _non_passive_part_match_package_requirements(component)
     if not component_parts:
+        return None
+    if not package_keys and not component_variants:
         return None
 
     ranked = sorted(
@@ -792,7 +1098,7 @@ def _prefer_stage_candidate(
                 component_parts,
                 entry,
                 package_keys,
-                _component_package_variants(component),
+                component_variants,
             ),
             -int(bool(entry.add_token)),
             _norm(entry.library_name or ""),
@@ -805,9 +1111,12 @@ def _prefer_stage_candidate(
     if len(ranked) == 1:
         return ranked[0]
 
-    component_variants = _component_package_variants(component)
     top_score = _part_number_match_score(component_parts, ranked[0], package_keys, component_variants)
     second_score = _part_number_match_score(component_parts, ranked[1], package_keys, component_variants)
+    # For strong part-number+package matches, prefer deterministic best candidate
+    # instead of forcing ambiguity fallback.
+    if top_score >= 5:
+        return ranked[0]
     if top_score > second_score:
         return ranked[0]
     return None
@@ -1135,8 +1444,21 @@ def _extract_pitch_mm(value: str | None) -> float | None:
             pitch = float(match.group(1))
         except Exception:
             continue
-        if 1.0 <= pitch <= 10.0:
+        if 0.2 <= pitch <= 10.0:
             return pitch
+
+    encoded_pitch = re.search(
+        r"(?:QFN|TQFN|DFN|SOIC|SOP|HSOP|HSSOP|MSOP|SSOP|TSSOP|TSOP|LQFP|QFP)(\d{2,4})P",
+        raw,
+    )
+    if encoded_pitch:
+        try:
+            encoded = int(encoded_pitch.group(1))
+            pitch = float(encoded) / 100.0
+            if 0.2 <= pitch <= 10.0:
+                return pitch
+        except Exception:
+            return None
     return None
 
 
@@ -1145,10 +1467,12 @@ def _extract_pin_count(value: str | None) -> int | None:
     if not raw:
         return None
     patterns = (
+        r"(?:QFN|TQFN|DFN|SOIC|SOP|HSOP|HSSOP|MSOP|SSOP|TSSOP|TSOP|LQFP|QFP)[-_ ]?(\d{1,3})",
         r"1X(\d{1,2})",
         r"(?:^|[^0-9])(\d{1,2})P(?:[^A-Z0-9]|$)",
         r"S(\d{1,2})B",
         r"(?:^|[^0-9])PIN[-_ ]?(\d{1,2})(?:[^0-9]|$)",
+        r"-(\d{1,2})N(?:[^A-Z0-9]|$)",
         r"[-_](\d{1,2})$",
     )
     for pattern in patterns:
@@ -1182,8 +1506,81 @@ def _package_compatible(
     if package_variants and entry_variants and package_variants.intersection(entry_variants):
         return True
     if entry_pkg and package_keys:
-        return any(key and (key in entry_pkg or entry_pkg in key) for key in package_keys)
+        if any(key and (key in entry_pkg or entry_pkg in key) for key in package_keys):
+            return True
+
+    entry_families = _variant_family_tokens(entry_variants)
+    component_families = _variant_family_tokens(package_variants)
+    if entry_families and component_families and entry_families.intersection(component_families):
+        entry_pitches = _variant_pitch_tokens(entry_variants)
+        component_pitches = _variant_pitch_tokens(package_variants)
+        entry_pins = _variant_pin_count_tokens(entry_variants)
+        component_pins = _variant_pin_count_tokens(package_variants)
+
+        has_dimension_signal = bool((entry_pitches and component_pitches) or (entry_pins and component_pins))
+        if not has_dimension_signal:
+            return False
+
+        pitch_ok = True
+        if entry_pitches and component_pitches:
+            pitch_ok = min(
+                abs(left - right)
+                for left in entry_pitches
+                for right in component_pitches
+            ) <= 15  # 0.15 mm in hundredths
+
+        pin_ok = True
+        if entry_pins and component_pins:
+            pin_ok = min(
+                abs(left - right)
+                for left in entry_pins
+                for right in component_pins
+            ) <= 1  # allow exposed-pad +1 count delta
+
+        if pitch_ok and pin_ok:
+            return True
     return False
+
+
+def _package_family_token(base: str) -> str:
+    token = _norm(base)
+    if any(item in token for item in ("HSOP", "HSSOP", "SOIC", "SOP", "SSOP", "TSSOP", "MSOP", "TSOP")):
+        return "FAM_GULLWING"
+    if any(item in token for item in ("QFN", "TQFN", "DFN")):
+        return "FAM_QFN"
+    if any(item in token for item in ("LQFP", "QFP")):
+        return "FAM_QFP"
+    if "BGA" in token:
+        return "FAM_BGA"
+    return ""
+
+
+def _variant_family_tokens(variants: set[str]) -> set[str]:
+    return {item for item in variants if item.startswith("FAM_")}
+
+
+def _variant_pitch_tokens(variants: set[str]) -> set[int]:
+    out: set[int] = set()
+    for item in variants:
+        if not item.startswith("PITCH"):
+            continue
+        try:
+            out.add(int(item.removeprefix("PITCH")))
+        except Exception:
+            continue
+    return out
+
+
+def _variant_pin_count_tokens(variants: set[str]) -> set[int]:
+    out: set[int] = set()
+    for item in variants:
+        if not item.startswith("PINCOUNT"):
+            continue
+        try:
+            out.add(int(item.removeprefix("PINCOUNT")))
+        except Exception:
+            continue
+    return out
 
 
 def _resolve_component_package(component: Component, package_lookup: dict[str, Package]) -> Package | None:
@@ -1231,21 +1628,43 @@ def _external_package_match_is_compatible(
             external_pads=external_geometry,
         )
         if not strict_board_fidelity:
+            _clear_component_external_origin_offset(component)
             return relaxed_ok, relaxed_reason
 
         strict_ok, strict_reason = _package_geometry_is_compatible(source_package, external_geometry)
         if strict_ok:
+            _clear_component_external_origin_offset(component)
             return True, None
         if relaxed_ok and strict_reason and strict_reason.startswith("pad_origin_mismatch:"):
+            translation_ok, transform = _package_geometry_translation_is_compatible(
+                source_package=source_package,
+                external_pads=external_geometry,
+            )
+            if translation_ok and transform is not None:
+                _set_component_external_origin_offset(component, transform)
             return True, f"relaxed_origin_only:{strict_reason}"
+        _clear_component_external_origin_offset(component)
         return False, strict_reason or relaxed_reason
     if class_name == "connector" and _is_screw_terminal_component(component):
+        _clear_component_external_origin_offset(component)
         return _screw_terminal_package_geometry_is_compatible(
             source_package=source_package,
             external_pads=external_geometry,
         )
-
-    return _package_geometry_is_compatible(source_package, external_geometry)
+    strict_ok, strict_reason = _package_geometry_is_compatible(source_package, external_geometry)
+    if strict_ok:
+        _clear_component_external_origin_offset(component)
+        return True, None
+    if strict_reason and strict_reason.startswith("pad_origin_mismatch:"):
+        translation_ok, transform = _package_geometry_translation_is_compatible(
+            source_package=source_package,
+            external_pads=external_geometry,
+        )
+        if translation_ok and transform is not None:
+            _set_component_external_origin_offset(component, transform)
+            return True, f"relaxed_origin_only:{strict_reason}"
+    _clear_component_external_origin_offset(component)
+    return False, strict_reason
 
 
 def _load_external_package_geometry(
@@ -1262,9 +1681,8 @@ def _load_external_package_geometry(
         cache[key] = None
         return None
 
-    try:
-        root = ET.parse(path).getroot()
-    except Exception:
+    root = _parse_external_library_root(path)
+    if root is None:
         cache[key] = None
         return None
 
@@ -1323,6 +1741,40 @@ def _load_external_package_geometry(
 
     cache[key] = pads if pads else None
     return cache[key]
+
+
+def _parse_external_library_root(path: Path) -> ET.Element | None:
+    try:
+        return ET.parse(path).getroot()
+    except Exception:
+        pass
+
+    try:
+        raw = path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return None
+
+    sanitized = _sanitize_xml_named_entities(raw)
+    try:
+        return ET.fromstring(sanitized)
+    except Exception:
+        return None
+
+
+def _sanitize_xml_named_entities(text: str) -> str:
+    xml_builtins = {"amp", "lt", "gt", "apos", "quot"}
+    pattern = re.compile(r"&([A-Za-z][A-Za-z0-9]+);")
+
+    def _replace(match: re.Match[str]) -> str:
+        name = str(match.group(1) or "")
+        if name in xml_builtins:
+            return match.group(0)
+        decoded = html.unescape(match.group(0))
+        if decoded == match.group(0):
+            return ""
+        return decoded
+
+    return pattern.sub(_replace, text)
 
 
 def _package_geometry_is_compatible(
@@ -1388,6 +1840,140 @@ def _package_geometry_is_compatible(
                     return False, "pad_pitch_mismatch"
 
     return True, None
+
+
+def _package_geometry_translation_is_compatible(
+    source_package: Package,
+    external_pads: dict[str, _ExternalPadGeometry],
+) -> tuple[bool, _ExternalGeometryTransform | None]:
+    source_map: dict[str, tuple[float, float, float, float, float | None]] = {}
+    for pad in source_package.pads:
+        pad_name = str(pad.pad_number or "").strip()
+        if not pad_name:
+            continue
+        source_map[pad_name] = (
+            float(pad.at.x_mm),
+            float(pad.at.y_mm),
+            max(float(pad.width_mm), 0.0),
+            max(float(pad.height_mm), 0.0),
+            float(pad.drill_mm) if pad.drill_mm is not None and pad.drill_mm > 0.0 else None,
+        )
+
+    common = sorted(set(source_map).intersection(set(external_pads)))
+    if len(common) < 2:
+        return False, None
+
+    size_tol_mm = 0.60
+    drill_tol_mm = 0.12
+    distance_tol_mm = 0.25
+    translation_tol_mm = 0.15
+
+    for pad_name in common:
+        src_w = source_map[pad_name][2]
+        src_h = source_map[pad_name][3]
+        src_drill = source_map[pad_name][4]
+        ext = external_pads[pad_name]
+
+        src_plated = src_drill is not None and src_drill > 0.0
+        ext_plated = ext.drill_mm is not None and ext.drill_mm > 0.0
+        if src_plated != ext_plated:
+            return False, None
+        if src_plated and ext.drill_mm is not None and src_drill is not None:
+            if abs(src_drill - ext.drill_mm) > drill_tol_mm:
+                return False, None
+
+        if src_w > 0.0 and src_h > 0.0 and ext.width_mm > 0.0 and ext.height_mm > 0.0:
+            src_major, src_minor = max(src_w, src_h), min(src_w, src_h)
+            ext_major, ext_minor = max(ext.width_mm, ext.height_mm), min(ext.width_mm, ext.height_mm)
+            if abs(src_major - ext_major) > size_tol_mm or abs(src_minor - ext_minor) > size_tol_mm:
+                return False, None
+
+    best: tuple[tuple[float, int], _ExternalGeometryTransform] | None = None
+    for rotation_deg in (0, 90, 180, 270):
+        offsets: list[tuple[float, float]] = []
+        rotated: dict[str, tuple[float, float]] = {}
+        for pad_name in common:
+            src_x, src_y, _, _, _ = source_map[pad_name]
+            ext = external_pads[pad_name]
+            ext_x, ext_y = _rotate_xy(ext.x_mm, ext.y_mm, rotation_deg)
+            rotated[pad_name] = (ext_x, ext_y)
+            offsets.append((src_x - ext_x, src_y - ext_y))
+
+        avg_dx = sum(item[0] for item in offsets) / float(len(offsets))
+        avg_dy = sum(item[1] for item in offsets) / float(len(offsets))
+        max_deviation = max(
+            max(abs(dx - avg_dx), abs(dy - avg_dy))
+            for dx, dy in offsets
+        )
+        if max_deviation > translation_tol_mm:
+            continue
+
+        distance_ok = True
+        for idx in range(len(common)):
+            left_name = common[idx]
+            sx_l, sy_l, _, _, _ = source_map[left_name]
+            ex_l, ey_l = rotated[left_name]
+            for jdx in range(idx + 1, len(common)):
+                right_name = common[jdx]
+                sx_r, sy_r, _, _, _ = source_map[right_name]
+                ex_r, ey_r = rotated[right_name]
+                src_dist = math.hypot(sx_l - sx_r, sy_l - sy_r)
+                ext_dist = math.hypot(ex_l - ex_r, ey_l - ey_r)
+                if abs(src_dist - ext_dist) > distance_tol_mm:
+                    distance_ok = False
+                    break
+            if not distance_ok:
+                break
+        if not distance_ok:
+            continue
+
+        candidate = _ExternalGeometryTransform(
+            offset_x_mm=avg_dx,
+            offset_y_mm=avg_dy,
+            rotation_deg=int(rotation_deg),
+        )
+        score = (int(round(max_deviation * 1_000_000.0)), int(rotation_deg))
+        if best is None or score < best[0]:
+            best = (score, candidate)
+
+    if best is None:
+        return False, None
+    return True, best[1]
+
+
+def _rotate_xy(x_mm: float, y_mm: float, rotation_deg: int) -> tuple[float, float]:
+    angle = int(rotation_deg) % 360
+    if angle == 0:
+        return (x_mm, y_mm)
+    if angle == 90:
+        return (-y_mm, x_mm)
+    if angle == 180:
+        return (-x_mm, -y_mm)
+    if angle == 270:
+        return (y_mm, -x_mm)
+    radians = math.radians(float(angle))
+    cos_a = math.cos(radians)
+    sin_a = math.sin(radians)
+    return (
+        x_mm * cos_a - y_mm * sin_a,
+        x_mm * sin_a + y_mm * cos_a,
+    )
+
+
+def _set_component_external_origin_offset(component: Component, transform: _ExternalGeometryTransform) -> None:
+    component.attributes["_external_origin_offset_x_mm"] = float(transform.offset_x_mm)
+    component.attributes["_external_origin_offset_y_mm"] = float(transform.offset_y_mm)
+    rotation = int(transform.rotation_deg) % 360
+    if rotation:
+        component.attributes["_external_rotation_offset_deg"] = rotation
+    else:
+        component.attributes.pop("_external_rotation_offset_deg", None)
+
+
+def _clear_component_external_origin_offset(component: Component) -> None:
+    component.attributes.pop("_external_origin_offset_x_mm", None)
+    component.attributes.pop("_external_origin_offset_y_mm", None)
+    component.attributes.pop("_external_rotation_offset_deg", None)
 
 
 def _package_is_smd(package: Package) -> bool:
@@ -1720,7 +2306,7 @@ def _board_pin_net_hints(project: Project) -> dict[str, dict[str, set[str]]]:
         package_lookup[package.name] = package
 
     board = project.board
-    net_alias = _build_track_net_aliases(board.tracks, board.vias)
+    net_alias = _project_track_net_aliases(project)
     board_pads = [pad for pad in board.pads if str(pad.net or "").strip()]
     board_vias = [via for via in board.vias if str(via.net or "").strip()]
     board_tracks = [track for track in board.tracks if str(track.net or "").strip()]

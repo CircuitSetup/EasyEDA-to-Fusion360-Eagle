@@ -91,6 +91,20 @@ def infer_schematic_from_board(project: Project, force: bool = False) -> Schemat
         existing_lookup[net_name] = project.nets[-1]
         report.inferred_nets.append(net_name)
 
+    removed_invalid = _prune_invalid_pin_nodes(project)
+    if removed_invalid:
+        report.manual_review_items.append(
+            f"Removed {removed_invalid} invalid source schematic pin-node references during board-driven inference"
+        )
+        project.events.append(
+            project_event(
+                Severity.WARNING,
+                "INFERENCE_INVALID_PIN_NODES_PRUNED",
+                "Pruned invalid schematic pin-node references that do not exist in resolved package pads",
+                {"removed_nodes": removed_invalid},
+            )
+        )
+
     for component in project.components:
         if not _is_meaningful_refdes(component.refdes):
             continue
@@ -124,6 +138,43 @@ def infer_schematic_from_board(project: Project, force: bool = False) -> Schemat
         if _is_meaningful_refdes(component.refdes)
     )
     return report
+
+
+def _prune_invalid_pin_nodes(project: Project) -> int:
+    package_lookup: dict[str, set[str]] = {}
+    for package in project.packages:
+        pins = {
+            str(pad.pad_number or "").strip()
+            for pad in package.pads
+            if str(pad.pad_number or "").strip()
+        }
+        package_lookup[package.package_id] = pins
+        package_lookup[package.name] = pins
+
+    component_valid_pins: dict[str, set[str]] = {}
+    for component in project.components:
+        ref = str(component.refdes or "").strip()
+        package_id = str(component.package_id or "").strip()
+        if not ref or not package_id:
+            continue
+        component_valid_pins[ref] = set(package_lookup.get(package_id, set()))
+
+    removed = 0
+    for net in project.nets:
+        filtered: list[NetNode] = []
+        for node in net.nodes:
+            ref = str(node.refdes or "").strip()
+            pin = str(node.pin or "").strip()
+            if not ref or not pin:
+                removed += 1
+                continue
+            valid = component_valid_pins.get(ref, set())
+            if valid and pin not in valid:
+                removed += 1
+                continue
+            filtered.append(node)
+        net.nodes = filtered
+    return removed
 
 
 def _is_meaningful_refdes(refdes: str) -> bool:

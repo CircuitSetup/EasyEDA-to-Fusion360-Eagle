@@ -93,6 +93,8 @@ class SymbolPin:
     pin_number: str
     pin_name: str
     at: Point
+    rotation_deg: float | None = None
+    length_mm: float | None = None
 
 
 @dataclass

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import Callable
 
 from easyeda2fusion.converter import ConversionConfig, Converter
 from easyeda2fusion.matchers.library_matcher import LibraryEntry
@@ -26,6 +27,7 @@ def main() -> int:
         resistor_library_path = None
         capacitor_library_path = None
         use_default_fusion_libraries = True
+        schematic_layout_mode = args.schematic_layout
         verbose = args.verbose
     else:
         input_files = _arg_input_paths(args.input) if args.input else _prompt_input_files()
@@ -39,6 +41,7 @@ def main() -> int:
             Path(args.capacitor_library).expanduser().resolve() if args.capacitor_library else None
         )
         use_default_fusion_libraries = not bool(args.no_default_fusion_libraries)
+        schematic_layout_mode = args.schematic_layout
         verbose = args.verbose
 
     config = ConversionConfig(
@@ -51,12 +54,14 @@ def main() -> int:
         resistor_library_path=resistor_library_path,
         capacitor_library_path=capacitor_library_path,
         use_default_fusion_libraries=use_default_fusion_libraries,
+        schematic_layout_mode=schematic_layout_mode,
         verbose=verbose,
     )
 
     resolver = _interactive_resolver if match_mode == MatchMode.PROMPT else None
+    progress = _terminal_progress_callback()
     try:
-        result = Converter().run(config, resolver=resolver)
+        result = Converter().run(config, resolver=resolver, progress=progress)
     except Exception as exc:
         print(f"Conversion failed: {exc}")
         print(
@@ -109,6 +114,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not auto-scan local default Fusion/EAGLE .lbr folders",
     )
+    parser.add_argument(
+        "--schematic-layout",
+        choices=["board", "clustered", "hybrid", "human"],
+        default="board",
+        help="Schematic placement strategy",
+    )
     parser.add_argument("--gui", action="store_true", help="Launch simple GUI picker flow")
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
     return parser
@@ -136,6 +147,18 @@ def _prompt_output_dir() -> Path:
     if not raw:
         raise SystemExit("No output directory provided")
     return Path(raw).expanduser().resolve()
+
+
+def _terminal_progress_callback() -> Callable[[int, str], None]:
+    width = 28
+
+    def _callback(percent: int, message: str) -> None:
+        pct = max(0, min(int(percent), 100))
+        filled = int(round((pct / 100.0) * width))
+        bar = "#" * filled + "-" * (width - filled)
+        print(f"[{bar}] {pct:3d}% {message}", flush=True)
+
+    return _callback
 
 
 def _interactive_resolver(component, candidates: list[LibraryEntry]) -> LibraryEntry | None:

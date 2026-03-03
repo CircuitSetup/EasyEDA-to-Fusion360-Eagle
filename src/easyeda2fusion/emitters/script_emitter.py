@@ -30,10 +30,6 @@ def emit_rebuild_scripts(
     _write_lines(brd_path, [*preamble, *brd_lines])
     scripts["board"] = brd_path
 
-    combined_path = out_dir / "rebuild_project.scr"
-    _write_lines(combined_path, [*preamble, *sch_lines, "", "BOARD;", *brd_lines])
-    scripts["project"] = combined_path
-
     return scripts
 
 

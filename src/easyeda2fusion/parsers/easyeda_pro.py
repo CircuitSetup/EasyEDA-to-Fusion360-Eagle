@@ -1062,6 +1062,17 @@ class EasyEDAProParser(EasyEDAParser):
         title: str,
         records: list[list[Any]],
     ) -> dict[str, Any] | None:
+        origin_x = 0.0
+        origin_y = 0.0
+        for record in records:
+            token = str(record[0]).upper()
+            if token != "HEAD":
+                continue
+            payload = record[1] if len(record) > 1 and isinstance(record[1], dict) else {}
+            origin_x = _safe_float(payload.get("originX", payload.get("origin_x", 0.0)))
+            origin_y = _safe_float(payload.get("originY", payload.get("origin_y", 0.0)))
+            break
+
         pins_by_id: dict[str, dict[str, Any]] = {}
 
         for record in records:
@@ -1128,6 +1139,8 @@ class EasyEDAProParser(EasyEDAParser):
         return {
             "id": symbol_id,
             "name": title or symbol_id,
+            "origin_x": float(origin_x),
+            "origin_y": float(origin_y),
             "pins": pins,
         }
 
