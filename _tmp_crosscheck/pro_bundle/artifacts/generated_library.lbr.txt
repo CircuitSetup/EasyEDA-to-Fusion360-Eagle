@@ -1,2 +1,0 @@
-Generated/Matched library summary
-Use accompanying JSON manifests and .scr scripts to reconstruct in EAGLE/Fusion.

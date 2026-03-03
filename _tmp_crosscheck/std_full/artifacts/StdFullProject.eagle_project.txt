@@ -1,7 +1,0 @@
-This converter emits conservative EAGLE scaffold files and reconstruction scripts.
-Use scripts/rebuild_project.scr to reconstruct full schematic and board intent.
-Project: StdFullProject
-Source format: easyeda_std
-Schematic scaffold: StdFullProject.sch
-Board scaffold: StdFullProject.brd
-Project file: eagle.epf
