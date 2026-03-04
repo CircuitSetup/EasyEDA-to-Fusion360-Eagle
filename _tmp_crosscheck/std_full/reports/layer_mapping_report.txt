@@ -1,7 +1,0 @@
-Layer Mapping Report (easyeda_std)
-
-[OK] source=1:TopLayer -> target=top_copper (electrical)
-[OK] source=2:BottomLayer -> target=bottom_copper (electrical)
-[OK] source=3:TopSilkLayer -> target=top_silkscreen (silkscreen)
-[OK] source=10:BoardOutline -> target=dimension (mechanical)
-[LOSSY] source=21:CustomFabLayer -> target=documentation (documentation)

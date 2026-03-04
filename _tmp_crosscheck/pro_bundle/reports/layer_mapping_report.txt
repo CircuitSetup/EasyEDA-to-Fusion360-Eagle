@@ -1,4 +1,0 @@
-Layer Mapping Report (easyeda_pro)
-
-[OK] source=1:Top Layer -> target=top_copper (electrical)
-[OK] source=11:Board Outline Layer -> target=dimension (mechanical)

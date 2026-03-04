@@ -1,2 +1,0 @@
-refdes,source_name,package,value,reason,required_action,attributes
-R1,RES,,1k,ambiguous_candidates_no_selection,manual_candidate_selection,Designator=R1;Name=RES;Value=1k
