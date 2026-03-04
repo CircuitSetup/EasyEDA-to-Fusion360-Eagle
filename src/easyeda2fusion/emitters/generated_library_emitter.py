@@ -412,6 +412,52 @@ def _emit_package_outline(package_el: ET.Element, package: Package) -> None:
 
     for item in package.outline:
         kind = str(item.get("kind", "")).strip().lower()
+        if kind == "polygon":
+            layer = _package_wire_layer(str(item.get("layer", "")))
+            if layer is None:
+                continue
+            points = item.get("points")
+            if not isinstance(points, list) or len(points) < 3:
+                continue
+            cleaned = _clean_outline_points(points)
+            if len(cleaned) < 3:
+                continue
+            poly_el = ET.SubElement(
+                package_el,
+                "polygon",
+                {
+                    "width": _fmt_mm(max(float(item.get("width_mm", 0.01) or 0.01), 0.01)),
+                    "layer": layer,
+                },
+            )
+            for point in cleaned:
+                ET.SubElement(
+                    poly_el,
+                    "vertex",
+                    {
+                        "x": _fmt_mm(float(point.get("x_mm", 0.0))),
+                        "y": _fmt_mm(float(point.get("y_mm", 0.0))),
+                    },
+                )
+            continue
+
+        if kind == "hole":
+            drill_mm = float(item.get("drill_mm", item.get("drill", 0.0)) or 0.0)
+            if drill_mm <= 0.0:
+                continue
+            x = float(item.get("x_mm", item.get("x", 0.0)) or 0.0)
+            y = float(item.get("y_mm", item.get("y", 0.0)) or 0.0)
+            ET.SubElement(
+                package_el,
+                "hole",
+                {
+                    "x": _fmt_mm(x),
+                    "y": _fmt_mm(y),
+                    "drill": _fmt_mm(drill_mm),
+                },
+            )
+            continue
+
         if kind == "wire_path":
             layer = _package_wire_layer(str(item.get("layer", "")))
             if layer is None:
@@ -642,6 +688,14 @@ def _package_wire_layer(source_layer: str) -> str | None:
         return "21"
     if key in {"4", "bottom_silkscreen", "bottomsilkscreen", "bottomsilklayer"}:
         return "22"
+    if key in {"12", "39", "41", "keepout", "keepoutlayer", "tkeepout", "trestrict"}:
+        return "41"
+    if key in {"40", "42", "bkeepout", "brestrict"}:
+        return "42"
+    if key in {"43", "vrestrict"}:
+        return "43"
+    if key in {"46", "milling", "millinglayer", "route", "routelayer", "cutout", "slot"}:
+        return "46"
     if key in {"49", "component_marking", "componentmarkinglayer"}:
         return "21"
     if key in {"50"}:

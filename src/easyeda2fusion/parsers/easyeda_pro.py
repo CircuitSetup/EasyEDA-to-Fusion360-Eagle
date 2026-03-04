@@ -993,12 +993,29 @@ class EasyEDAProParser(EasyEDAParser):
                 points_source = record[6] if token == "POLY" and len(record) > 6 else record[7] if len(record) > 7 else []
                 points = EasyEDAProParser._extract_point_list(points_source)
                 if len(points) >= 2:
+                    kind = "polygon" if EasyEDAProParser._is_keepout_like_layer(layer) else "wire_path"
                     outline_items.append(
                         {
-                            "kind": "wire_path",
+                            "kind": kind,
                             "layer": layer,
                             "width": _safe_float(record[5] if len(record) > 5 else 0.2),
                             "points": points,
+                        }
+                    )
+                continue
+
+            if token == "HOLE":
+                x = _safe_float(record[4] if len(record) > 4 else record[3] if len(record) > 3 else 0.0)
+                y = _safe_float(record[5] if len(record) > 5 else record[4] if len(record) > 4 else 0.0)
+                drill = _safe_float(record[6] if len(record) > 6 else record[5] if len(record) > 5 else 0.0)
+                if drill > 0.0:
+                    outline_items.append(
+                        {
+                            "kind": "hole",
+                            "layer": str(record[3]) if len(record) > 3 else "",
+                            "x": x,
+                            "y": y,
+                            "drill": drill,
                         }
                     )
                 continue
@@ -1142,6 +1159,25 @@ class EasyEDAProParser(EasyEDAParser):
             "origin_x": float(origin_x),
             "origin_y": float(origin_y),
             "pins": pins,
+        }
+
+    @staticmethod
+    def _is_keepout_like_layer(layer: str) -> bool:
+        key = str(layer or "").strip().lower()
+        return key in {
+            "12",
+            "39",
+            "40",
+            "41",
+            "42",
+            "43",
+            "keepout",
+            "keepoutlayer",
+            "tkeepout",
+            "bkeepout",
+            "trestrict",
+            "brestrict",
+            "vrestrict",
         }
 
     @staticmethod

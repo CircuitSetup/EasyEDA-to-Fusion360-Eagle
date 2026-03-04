@@ -19,6 +19,7 @@ from easyeda2fusion.model import (
     Board,
     Component,
     Device,
+    Hole,
     Net,
     NetNode,
     Package,
@@ -826,6 +827,59 @@ def test_generated_library_maps_layer50_outline_to_docu(tmp_path) -> None:
     assert pkg.find("./wire[@layer='51']") is not None
 
 
+def test_generated_library_emits_package_keepout_polygon_and_hole(tmp_path) -> None:
+    symbol = Symbol(
+        symbol_id="SYM_MECH1",
+        name="MECH1",
+        pins=[SymbolPin(pin_number="1", pin_name="1", at=Point(0.0, 0.0))],
+    )
+    package = Package(
+        package_id="PKG_MECH1",
+        name="PKG_MECH1",
+        pads=[Pad(pad_number="1", at=Point(0.0, 0.0), shape="rect", width_mm=1.0, height_mm=1.0, layer="top_copper")],
+        outline=[
+            {
+                "kind": "polygon",
+                "layer": "12",
+                "width_mm": 0.15,
+                "points": [
+                    {"x_mm": -2.0, "y_mm": -1.0},
+                    {"x_mm": 2.0, "y_mm": -1.0},
+                    {"x_mm": 2.0, "y_mm": 1.0},
+                    {"x_mm": -2.0, "y_mm": 1.0},
+                ],
+            },
+            {
+                "kind": "hole",
+                "x_mm": 3.5,
+                "y_mm": 0.0,
+                "drill_mm": 1.3,
+            },
+        ],
+    )
+    device = Device(
+        device_id="DEV_MECH1",
+        name="DEV_MECH1",
+        symbol_id=symbol.symbol_id,
+        package_id=package.package_id,
+        pin_pad_map={"1": "1"},
+    )
+    out = emit_generated_library(
+        MatchContext(new_library_parts=[GeneratedLibraryPart(symbol=symbol, package=package, device=device, source="test")]),
+        tmp_path,
+    )
+    assert out is not None
+    root = ET.parse(out).getroot()
+    pkg = root.find(".//library/packages/package[@name='PKG_MECH1']")
+    assert pkg is not None
+    poly = pkg.find("./polygon[@layer='41']")
+    assert poly is not None
+    vertices = poly.findall("./vertex")
+    assert len(vertices) >= 4
+    hole = pkg.find("./hole[@x='3.5'][@y='0'][@drill='1.3']")
+    assert hole is not None
+
+
 def test_generated_library_contains_supply_symbols_from_project_power_nets(tmp_path) -> None:
     project = Project(
         project_id="p_supply",
@@ -1385,6 +1439,110 @@ def test_board_builder_emits_polygon_for_copper_regions() -> None:
     lines = BoardReconstructionBuilder().build_commands(project)
     assert "LAYER 1;" in lines
     assert any(line.startswith("POLYGON 'GND' 0 ") for line in lines)
+
+
+def test_board_builder_preserves_copper_polygon_net_alias_from_tracks() -> None:
+    project = Project(
+        project_id="p_poly_alias",
+        name="p_poly_alias",
+        source_format=SourceFormat.EASYEDA_PRO,
+        input_files=[],
+        board=Board(
+            regions=[
+                Region(
+                    region_id="reg_alias",
+                    layer="1",
+                    net="N$1",
+                    points=[
+                        Point(0.0, 0.0),
+                        Point(20.0, 0.0),
+                        Point(20.0, 10.0),
+                        Point(0.0, 10.0),
+                    ],
+                )
+            ],
+            tracks=[
+                Track(start=Point(0.0, 5.0), end=Point(20.0, 5.0), width_mm=0.2, layer="1", net="N$1"),
+                Track(start=Point(10.0, 0.0), end=Point(10.0, 10.0), width_mm=0.2, layer="1", net="GND"),
+            ],
+        ),
+    )
+
+    lines = BoardReconstructionBuilder().build_commands(project)
+    assert any(line.startswith("POLYGON 'GND' 0 ") for line in lines)
+    assert all(not line.startswith("POLYGON 'N$1' 0 ") for line in lines)
+
+
+def test_board_builder_emits_keepout_polygon_for_standard_layer_12_region() -> None:
+    project = Project(
+        project_id="p_keepout_std12",
+        name="p_keepout_std12",
+        source_format=SourceFormat.EASYEDA_STD,
+        input_files=[],
+        board=Board(
+            regions=[
+                Region(
+                    region_id="k1",
+                    layer="12",
+                    points=[
+                        Point(0.0, 0.0),
+                        Point(8.0, 0.0),
+                        Point(8.0, 6.0),
+                        Point(0.0, 6.0),
+                    ],
+                )
+            ]
+        ),
+    )
+
+    lines = BoardReconstructionBuilder().build_commands(project)
+    assert "LAYER 41;" in lines
+    assert any(line.startswith("POLYGON 0 ") for line in lines)
+
+
+def test_board_builder_emits_cutout_region_on_milling_layer_46() -> None:
+    project = Project(
+        project_id="p_cutout_milling",
+        name="p_cutout_milling",
+        source_format=SourceFormat.EASYEDA_PRO,
+        input_files=[],
+        board=Board(
+            cutouts=[
+                Region(
+                    region_id="slot1",
+                    layer="46",
+                    points=[
+                        Point(1.0, 1.0),
+                        Point(5.0, 1.0),
+                        Point(5.0, 3.0),
+                        Point(1.0, 3.0),
+                    ],
+                )
+            ]
+        ),
+    )
+
+    lines = BoardReconstructionBuilder().build_commands(project)
+    assert "LAYER 46;" in lines
+    assert any(line.startswith("WIRE ") and "(1.0000 1.0000)" in line for line in lines)
+
+
+def test_board_builder_emits_hole_commands_for_board_holes() -> None:
+    project = Project(
+        project_id="p_holes_emit",
+        name="p_holes_emit",
+        source_format=SourceFormat.EASYEDA_PRO,
+        input_files=[],
+        board=Board(
+            holes=[
+                Hole(at=Point(12.5, 7.5), drill_mm=1.2, plated=False),
+                Hole(at=Point(20.0, 10.0), drill_mm=0.8, plated=False),
+            ]
+        ),
+    )
+    lines = BoardReconstructionBuilder().build_commands(project)
+    assert "HOLE 1.2000 (12.5000 7.5000);" in lines
+    assert "HOLE 0.8000 (20.0000 10.0000);" in lines
 
 
 def test_schematic_builder_uses_external_library_pin_offsets(tmp_path) -> None:

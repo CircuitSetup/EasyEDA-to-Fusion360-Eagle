@@ -163,6 +163,19 @@ def test_pro_efoo_package_extracts_silkscreen_outline_and_name_text():
     assert any(item.get("kind") == "text" and item.get("text") == ">NAME" for item in outline)
 
 
+def test_pro_efoo_package_extracts_keepout_polygon_and_hole_primitives():
+    records = [
+        ["POLY", "k1", 0, "", 12, 10, [0, 0, "L", 100, 0, 100, 50, 0, 50], 0],
+        ["HOLE", "h1", 0, 47, 25, 30, 12],
+        ["PAD", "p1", 0, "", 1, "1", 0, 0, 0, None, ["RECT", 20, 20, 0], []],
+    ]
+    package = EasyEDAProParser._convert_efoo_records_to_package("fp2", "PKG2", records)
+    assert package is not None
+    outline = package.get("outline", [])
+    assert any(item.get("kind") == "polygon" and item.get("layer") == "12" for item in outline)
+    assert any(item.get("kind") == "hole" and abs(float(item.get("drill", 0.0)) - 12.0) < 1e-9 for item in outline)
+
+
 def test_pro_efoo_string_rotation_uses_rotation_field_index_13():
     records = [
         ["STRING", "s1", 0, 3, 10.0, 20.0, "PKG-TXT", "default", 45.0, 7, 0, 0, 3, 180, 0, 0, 0, 0],

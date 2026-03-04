@@ -397,6 +397,46 @@ class Normalizer:
                         )
                     continue
 
+                if kind == "polygon":
+                    points: list[dict[str, float]] = []
+                    raw_points = item.get("points")
+                    if isinstance(raw_points, list):
+                        for point in raw_points:
+                            if not isinstance(point, (list, tuple)) or len(point) < 2:
+                                continue
+                            x_mm, y_mm = unit_norm.to_mm(point[0], point[1])
+                            points.append({"x_mm": x_mm, "y_mm": y_mm})
+                    if len(points) >= 3:
+                        outline.append(
+                            {
+                                "kind": "polygon",
+                                "layer": layer,
+                                "width_mm": unit_norm.scalar_to_mm(float(item.get("width", item.get("width_mm", 0.2)))),
+                                "points": points,
+                            }
+                        )
+                    continue
+
+                if kind == "hole":
+                    x_mm, y_mm = unit_norm.to_mm(
+                        float(item.get("x", item.get("x_mm", 0.0))),
+                        float(item.get("y", item.get("y_mm", 0.0))),
+                    )
+                    drill_mm = unit_norm.scalar_to_mm(
+                        float(item.get("drill", item.get("drill_mm", 0.0)))
+                    )
+                    if drill_mm > 0.0:
+                        outline.append(
+                            {
+                                "kind": "hole",
+                                "x_mm": x_mm,
+                                "y_mm": y_mm,
+                                "drill_mm": drill_mm,
+                                "layer": layer,
+                            }
+                        )
+                    continue
+
                 if kind == "text":
                     x_mm, y_mm = unit_norm.to_mm(item.get("x", 0.0), item.get("y", 0.0))
                     outline.append(

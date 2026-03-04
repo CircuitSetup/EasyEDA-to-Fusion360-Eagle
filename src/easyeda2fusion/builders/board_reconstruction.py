@@ -84,11 +84,13 @@ class BoardReconstructionBuilder:
         for cutout in board.cutouts:
             lines.extend(_emit_region_wires(cutout.layer or "46", cutout.points, width_mm=0.0, close=True))
         for keepout in board.keepouts:
-            lines.extend(_emit_region_wires(keepout.layer or "41", keepout.points, width_mm=0.0, close=True))
+            lines.extend(_emit_keepout_polygon(keepout.layer or "41", keepout.points))
         for region in board.regions:
             if _is_copper_polygon_region(region.layer, region.net, region.points):
                 region_net = _canonical_net_name(region.net, net_alias)
                 lines.extend(_emit_copper_polygon(region.layer, region_net, region.points))
+            elif _is_keepout_region(region.layer, region.points):
+                lines.extend(_emit_keepout_polygon(region.layer, region.points))
             else:
                 lines.extend(_emit_region_wires(region.layer, region.points, width_mm=0.0, close=True))
 
@@ -251,10 +253,12 @@ def _layer_number(layer_name: str) -> str:
         return "32"
     if key in {"11", "dimension", "outline", "board_outline", "boardoutlinelayer"}:
         return "20"
-    if key in {"39", "41", "keepout", "tkeepout", "trestrict"}:
+    if key in {"12", "39", "41", "keepout", "keepoutlayer", "tkeepout", "trestrict"}:
         return "41"
     if key in {"40", "42", "bkeepout", "brestrict"}:
         return "42"
+    if key in {"46", "milling", "millinglayer", "route", "routelayer", "cutout", "slot"}:
+        return "46"
     if key in {"47", "56", "drill", "hole", "holedrawing", "drilldrawinglayer"}:
         return "44"
     if key in {"13", "14", "documentation", "mechanical", "t_docu"}:
@@ -307,6 +311,20 @@ def _emit_copper_polygon(layer: str, net_name: str, points) -> list[str]:
     ]
 
 
+def _emit_keepout_polygon(layer: str, points) -> list[str]:
+    cleaned = _clean_points(points, close=True)
+    if len(cleaned) < 3:
+        return _emit_region_wires(layer, points, width_mm=0.0, close=True)
+    layer_num = _layer_number(str(layer))
+    if not _is_keepout_layer_num(layer_num):
+        return _emit_region_wires(layer, points, width_mm=0.0, close=True)
+    coords = " ".join(f"({pt.x_mm:.4f} {pt.y_mm:.4f})" for pt in cleaned)
+    return [
+        f"LAYER {layer_num};",
+        f"POLYGON 0 {coords};",
+    ]
+
+
 def _is_copper_polygon_region(layer: str, net_name: str | None, points) -> bool:
     if len(points) < 3:
         return False
@@ -322,6 +340,17 @@ def _is_copper_layer_num(layer_num: str) -> bool:
     except Exception:
         return False
     return idx == 1 or idx == 16 or 2 <= idx <= 15
+
+
+def _is_keepout_layer_num(layer_num: str) -> bool:
+    return str(layer_num) in {"39", "40", "41", "42", "43"}
+
+
+def _is_keepout_region(layer: str, points) -> bool:
+    if len(points) < 3:
+        return False
+    layer_num = _layer_number(str(layer))
+    return _is_keepout_layer_num(layer_num)
 
 
 def _region_wire_width_for_layer(layer_num: str, width_mm: float) -> float:
