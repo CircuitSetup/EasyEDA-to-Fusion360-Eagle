@@ -34,6 +34,7 @@ class UnitNormalizer:
         explicit_scale = metadata.get("coordinate_scale_to_mm")
         y_axis_inverted = bool(metadata.get("y_axis_inverted", False))
         origin = metadata.get("origin", {}) if isinstance(metadata.get("origin"), dict) else {}
+        origin_raw = metadata.get("origin_raw", {}) if isinstance(metadata.get("origin_raw"), dict) else {}
 
         if explicit_scale is not None:
             scale = float(explicit_scale)
@@ -52,12 +53,23 @@ class UnitNormalizer:
         else:
             scale = 1.0
 
+        origin_x_mm = float(origin.get("x_mm", 0.0))
+        origin_y_mm = float(origin.get("y_mm", 0.0))
+        if not origin and origin_raw:
+            # Legacy Standard shape-string exports often use raw CAD coordinates
+            # anchored at head.x/head.y. Convert this raw origin with the resolved
+            # unit scale so geometry lands near project origin.
+            raw_x = float(origin_raw.get("x", 0.0))
+            raw_y = float(origin_raw.get("y", 0.0))
+            origin_x_mm = -raw_x * scale
+            origin_y_mm = -raw_y * scale
+
         return UnitConfig(
             source_format=source_format,
             coordinate_scale_to_mm=scale,
             y_axis_inverted=y_axis_inverted,
-            origin_x_mm=float(origin.get("x_mm", 0.0)),
-            origin_y_mm=float(origin.get("y_mm", 0.0)),
+            origin_x_mm=origin_x_mm,
+            origin_y_mm=origin_y_mm,
         )
 
     def to_mm(self, x_raw: float | int, y_raw: float | int) -> tuple[float, float]:

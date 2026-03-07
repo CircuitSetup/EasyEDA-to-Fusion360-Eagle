@@ -68,6 +68,25 @@ def infer_schematic_from_board(project: Project, force: bool = False) -> Schemat
             net.name = canonical
         existing_lookup.setdefault(canonical, net)
 
+    node_owner: dict[tuple[str, str], str] = {}
+    for net_name, net in existing_lookup.items():
+        pruned_nodes: list[NetNode] = []
+        for node in net.nodes:
+            key = (str(node.refdes or "").strip(), str(node.pin or "").strip())
+            if not key[0] or not key[1]:
+                continue
+            owner = node_owner.get(key)
+            if owner is None:
+                node_owner[key] = net_name
+                pruned_nodes.append(node)
+            elif owner == net_name:
+                pruned_nodes.append(node)
+            else:
+                # Keep first-seen owner deterministically; board inference may override below.
+                continue
+        net.nodes = pruned_nodes
+
+    skipped_conflicting_nodes = 0
     for net_name, nodes in sorted(inferred_nodes.items()):
         target = existing_lookup.get(net_name)
         if target is None:
@@ -78,11 +97,19 @@ def infer_schematic_from_board(project: Project, force: bool = False) -> Schemat
 
         seen = {(node.refdes, node.pin) for node in target.nodes}
         for node in nodes:
-            key = (node.refdes, node.pin)
-            if key in seen:
+            key = (str(node.refdes or "").strip(), str(node.pin or "").strip())
+            if not key[0] or not key[1]:
                 continue
-            target.nodes.append(node)
+            owner = node_owner.get(key)
+            if owner and owner != net_name:
+                skipped_conflicting_nodes += 1
+                continue
+            if key in seen:
+                node_owner[key] = net_name
+                continue
+            target.nodes.append(NetNode(refdes=key[0], pin=key[1]))
             seen.add(key)
+            node_owner[key] = net_name
 
     for net_name in sorted(named_board_nets):
         if net_name in existing_lookup:
@@ -102,6 +129,19 @@ def infer_schematic_from_board(project: Project, force: bool = False) -> Schemat
                 "INFERENCE_INVALID_PIN_NODES_PRUNED",
                 "Pruned invalid schematic pin-node references that do not exist in resolved package pads",
                 {"removed_nodes": removed_invalid},
+            )
+        )
+
+    if skipped_conflicting_nodes:
+        report.manual_review_items.append(
+            f"Skipped {skipped_conflicting_nodes} conflicting inferred pin-to-net nodes that disagreed with existing source net assignments"
+        )
+        project.events.append(
+            project_event(
+                Severity.WARNING,
+                "INFERENCE_PIN_NET_CONFLICT_SKIPPED",
+                "Board-driven inference skipped inferred pin-to-net assignments that conflicted with existing source net nodes",
+                {"skipped_nodes": skipped_conflicting_nodes},
             )
         )
 
@@ -228,8 +268,11 @@ def _infer_board_pin_nodes(project: Project, net_alias: dict[str, str]) -> dict[
             pad_number = str(pad.pad_number or "").strip()
             if not pad_number:
                 continue
-            world = _component_pad_world_point(component, pad.at)
-            net_name = _closest_board_net(world, board_pads, board_vias, board_tracks, net_alias)
+            net_name = ""
+            for world in _component_pad_world_point_candidates(component, pad.at):
+                net_name = _closest_board_net(world, board_pads, board_vias, board_tracks, net_alias)
+                if net_name:
+                    break
             if not net_name:
                 continue
             dedupe_key = (net_name, refdes, pad_number)
@@ -241,11 +284,24 @@ def _infer_board_pin_nodes(project: Project, net_alias: dict[str, str]) -> dict[
     return inferred
 
 
-def _component_pad_world_point(component, pad_point: Point) -> Point:
+def _component_pad_world_point(
+    component,
+    pad_point: Point,
+    *,
+    mirror_x: bool = False,
+    mirror_y: bool = False,
+) -> Point:
     px = float(pad_point.x_mm)
     py = float(pad_point.y_mm)
+    if mirror_x:
+        px = -px
+    if mirror_y:
+        py = -py
     if component.side == Side.BOTTOM:
         px = -px
+    # Package-local pads in the normalized model are derived by rotating source
+    # absolute pad coordinates by -component.rotation during parsing. Reprojecting
+    # to board world coordinates must therefore apply +component.rotation.
     angle = math.radians(float(component.rotation_deg or 0.0))
     cos_a = math.cos(angle)
     sin_a = math.sin(angle)
@@ -255,6 +311,24 @@ def _component_pad_world_point(component, pad_point: Point) -> Point:
         x_mm=float(component.at.x_mm) + rx,
         y_mm=float(component.at.y_mm) + ry,
     )
+
+
+def _component_pad_world_point_candidates(component, pad_point: Point) -> list[Point]:
+    candidates = [
+        _component_pad_world_point(component, pad_point),
+        _component_pad_world_point(component, pad_point, mirror_x=True),
+        _component_pad_world_point(component, pad_point, mirror_y=True),
+        _component_pad_world_point(component, pad_point, mirror_x=True, mirror_y=True),
+    ]
+    unique: list[Point] = []
+    seen: set[tuple[float, float]] = set()
+    for point in candidates:
+        key = (round(float(point.x_mm), 6), round(float(point.y_mm), 6))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(point)
+    return unique
 
 
 def _closest_board_net(world: Point, board_pads, board_vias, board_tracks, net_alias: dict[str, str]) -> str:

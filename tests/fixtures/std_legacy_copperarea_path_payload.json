@@ -1,0 +1,10 @@
+{
+  "head": {
+    "docType": "3",
+    "x": "0",
+    "y": "0"
+  },
+  "shape": [
+    "COPPERAREA~1~1~GND~M 0 0 L 10 0 L 10 10 L 0 10 Z~1~solid~gge_ca~direct~none~[[\"M 0 0 L 12 0 L 12 12 L 6 15 L 0 12 Z\"]]~0~gge_ca~2~1~2~1~yes"
+  ]
+}

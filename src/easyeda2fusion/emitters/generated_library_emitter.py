@@ -491,7 +491,7 @@ def _emit_package_outline(package_el: ET.Element, package: Package) -> None:
             if not raw_text:
                 continue
             text_token = raw_text.upper()
-            if text_token in {"DESIGNATOR", "REF", "REFERENCE"}:
+            if text_token in {"DESIGNATOR", "REF", "REFERENCE"} or _looks_like_designator(raw_text):
                 raw_text = ">NAME"
                 text_token = ">NAME"
             elif text_token in {"VALUE", "VAL"}:

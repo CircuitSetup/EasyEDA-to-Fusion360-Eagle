@@ -743,7 +743,8 @@ def test_generated_library_places_part_number_text_on_values_layer_not_designato
     assert pkg is not None
     assert pkg.find("./text[@layer='27'][.='MBR0520LT1G']") is not None
     assert pkg.find("./text[@layer='27'][.='R0603']") is not None
-    assert pkg.find("./text[@layer='21'][.='R1']") is not None
+    assert pkg.find("./text[@layer='21'][.='R1']") is None
+    assert pkg.find("./text[@layer='25'][.='>NAME']") is not None
 
 
 def test_generated_library_moves_part_number_text_outside_package_body(tmp_path) -> None:
@@ -1085,6 +1086,165 @@ def test_board_builder_emits_standalone_th_pad_as_signal_via() -> None:
     assert any(line.startswith("VIA 'GND' 6.0000 round (10.0000 20.0000);") for line in lines)
 
 
+def test_board_builder_does_not_emit_component_pads_as_standalone_vias_when_origin_offset_applies() -> None:
+    project = Project(
+        project_id="p_component_pad_filter",
+        name="p_component_pad_filter",
+        source_format=SourceFormat.EASYEDA_PRO,
+        input_files=[],
+        components=[
+            Component(
+                refdes="J1",
+                value="",
+                source_name="CONN",
+                device_id="conn:J1",
+                package_id="PKG_J1",
+                at=Point(10.0, 20.0),
+                attributes={"_external_origin_offset_x_mm": 1.0, "_external_origin_offset_y_mm": 0.0},
+            )
+        ],
+        packages=[
+            Package(
+                package_id="PKG_J1",
+                name="PKG_J1",
+                pads=[
+                    Pad(
+                        pad_number="1",
+                        at=Point(0.0, 0.0),
+                        shape="ellipse",
+                        width_mm=2.0,
+                        height_mm=2.0,
+                        drill_mm=1.0,
+                        layer="11",
+                    )
+                ],
+            )
+        ],
+        board=Board(
+            pads=[
+                Pad(
+                    pad_number="1",
+                    at=Point(11.0, 20.0),
+                    shape="ellipse",
+                    width_mm=2.0,
+                    height_mm=2.0,
+                    drill_mm=1.0,
+                    layer="11",
+                    net="GND",
+                )
+            ]
+        ),
+    )
+    lines = BoardReconstructionBuilder().build_commands(project)
+    assert "CHANGE DRILL 1.0000;" not in lines
+    assert not any(line.startswith("VIA 'GND' 2.0000 round (11.0000 20.0000);") for line in lines)
+
+
+def test_board_builder_does_not_emit_component_pads_as_standalone_vias_with_mirrored_local_pad_frame() -> None:
+    project = Project(
+        project_id="p_component_pad_filter_mirror",
+        name="p_component_pad_filter_mirror",
+        source_format=SourceFormat.EASYEDA_STD,
+        input_files=[],
+        components=[
+            Component(
+                refdes="K1",
+                value="",
+                source_name="RELAY",
+                device_id="relay:K1",
+                package_id="PKG_K1",
+                at=Point(10.0, 10.0),
+                rotation_deg=90.0,
+            )
+        ],
+        packages=[
+            Package(
+                package_id="PKG_K1",
+                name="PKG_K1",
+                pads=[
+                    Pad(
+                        pad_number="1",
+                        at=Point(0.0, -1.0),
+                        shape="ellipse",
+                        width_mm=2.0,
+                        height_mm=2.0,
+                        drill_mm=1.0,
+                        layer="11",
+                    ),
+                    Pad(
+                        pad_number="2",
+                        at=Point(-2.0, -1.0),
+                        shape="ellipse",
+                        width_mm=2.0,
+                        height_mm=2.0,
+                        drill_mm=1.0,
+                        layer="11",
+                    ),
+                ],
+            )
+        ],
+        board=Board(
+            pads=[
+                Pad(
+                    pad_number="1",
+                    at=Point(11.0, 10.0),
+                    shape="ellipse",
+                    width_mm=2.0,
+                    height_mm=2.0,
+                    drill_mm=1.0,
+                    layer="11",
+                    net="N1",
+                ),
+                Pad(
+                    pad_number="2",
+                    at=Point(11.0, 12.0),
+                    shape="ellipse",
+                    width_mm=2.0,
+                    height_mm=2.0,
+                    drill_mm=1.0,
+                    layer="11",
+                    net="N2",
+                ),
+            ]
+        ),
+    )
+    lines = BoardReconstructionBuilder().build_commands(project)
+    assert "CHANGE DRILL 1.0000;" not in lines
+    assert not any(line.startswith("VIA 'N1' 2.0000 round (11.0000 10.0000);") for line in lines)
+    assert not any(line.startswith("VIA 'N2' 2.0000 round (11.0000 12.0000);") for line in lines)
+
+
+def test_board_builder_clears_existing_outline_before_rebuild() -> None:
+    project = Project(
+        project_id="p_outline_clear",
+        name="p_outline_clear",
+        source_format=SourceFormat.EASYEDA_STD,
+        input_files=[],
+        board=Board(
+            outline=[
+                Region(
+                    region_id="outline",
+                    layer="11",
+                    points=[
+                        Point(0.0, 0.0),
+                        Point(10.0, 0.0),
+                        Point(10.0, 5.0),
+                        Point(0.0, 5.0),
+                    ],
+                )
+            ]
+        ),
+    )
+
+    lines = BoardReconstructionBuilder().build_commands(project)
+    clear_idx = lines.index("DISPLAY NONE 20;")
+    layer20_indices = [idx for idx, line in enumerate(lines) if line == "LAYER 20;"]
+    assert len(layer20_indices) >= 2
+    assert clear_idx < layer20_indices[1]
+    assert "GROUP (-100000.0000 -100000.0000) (100000.0000 100000.0000);" in lines
+    assert "DELETE (> -100000.0000 -100000.0000);" in lines
+
+
 def test_board_builder_uses_0_3mm_width_for_silkscreen_region_wires() -> None:
     project = Project(
         project_id="p_silk_wire_width",
@@ -1185,6 +1345,29 @@ def test_board_builder_keeps_standard_text_rotation_unmodified() -> None:
     )
     lines = BoardReconstructionBuilder().build_commands(project)
     assert "TEXT 'TOPTXT' (10.0000 10.0000) R90;" in lines
+
+
+def test_board_builder_keeps_legacy_standard_text_rotation_when_y_axis_inverted() -> None:
+    project = Project(
+        project_id="p_text_std_legacy",
+        name="p_text_std_legacy",
+        source_format=SourceFormat.EASYEDA_STD,
+        input_files=[],
+        metadata={"y_axis_inverted": True},
+        board=Board(
+            text=[
+                TextItem(
+                    text="TOPTXT",
+                    at=Point(10.0, 10.0),
+                    layer="3",
+                    size_mm=1.2,
+                    rotation_deg=90.0,
+                ),
+            ]
+        ),
+    )
+    lines = BoardReconstructionBuilder().build_commands(project)
+    assert "TEXT 'TOPTXT' (10.0000 10.0000) R270;" in lines
 
 
 def test_schematic_builder_filters_invalid_package_pins() -> None:
@@ -1438,7 +1621,7 @@ def test_board_builder_emits_polygon_for_copper_regions() -> None:
     )
     lines = BoardReconstructionBuilder().build_commands(project)
     assert "LAYER 1;" in lines
-    assert any(line.startswith("POLYGON 'GND' 0 ") for line in lines)
+    assert any(line.startswith("POLYGON 'GND' 0.2540 ") for line in lines)
 
 
 def test_board_builder_preserves_copper_polygon_net_alias_from_tracks() -> None:
@@ -1469,8 +1652,8 @@ def test_board_builder_preserves_copper_polygon_net_alias_from_tracks() -> None:
     )
 
     lines = BoardReconstructionBuilder().build_commands(project)
-    assert any(line.startswith("POLYGON 'GND' 0 ") for line in lines)
-    assert all(not line.startswith("POLYGON 'N$1' 0 ") for line in lines)
+    assert any(line.startswith("POLYGON 'GND' 0.2540 ") for line in lines)
+    assert all(not line.startswith("POLYGON 'N$1' 0.2540 ") for line in lines)
 
 
 def test_board_builder_emits_keepout_polygon_for_standard_layer_12_region() -> None:
@@ -1497,7 +1680,35 @@ def test_board_builder_emits_keepout_polygon_for_standard_layer_12_region() -> N
 
     lines = BoardReconstructionBuilder().build_commands(project)
     assert "LAYER 41;" in lines
-    assert any(line.startswith("POLYGON 0 ") for line in lines)
+    assert any(line.startswith("POLYGON 0.2540 ") for line in lines)
+
+
+def test_board_builder_emits_bottom_copper_polygon_on_bottom_layer_token() -> None:
+    project = Project(
+        project_id="p_poly_bottom",
+        name="p_poly_bottom",
+        source_format=SourceFormat.EASYEDA_STD,
+        input_files=[],
+        board=Board(
+            regions=[
+                Region(
+                    region_id="reg_bottom",
+                    layer="2",
+                    net="GND",
+                    points=[
+                        Point(0.0, 0.0),
+                        Point(12.0, 0.0),
+                        Point(12.0, 8.0),
+                        Point(0.0, 8.0),
+                    ],
+                )
+            ]
+        ),
+    )
+
+    lines = BoardReconstructionBuilder().build_commands(project)
+    assert "LAYER Bottom;" in lines
+    assert any(line.startswith("POLYGON 'GND' 0.2540 ") for line in lines)
 
 
 def test_board_builder_emits_cutout_region_on_milling_layer_46() -> None:
@@ -2635,6 +2846,53 @@ def test_external_library_pin_rotation_defines_outward_direction(tmp_path) -> No
     assert offsets["2"].outward_dx == -1.0 and offsets["2"].outward_dy == 0.0
     # Pin rot R180 (inward -X), outward must be +X.
     assert offsets["3"].outward_dx == 1.0 and offsets["3"].outward_dy == 0.0
+
+
+def test_external_library_long_pin_inside_body_uses_length_shift_for_terminal(tmp_path) -> None:
+    lib_path = tmp_path / "long_pin_body_side.lbr"
+    lib_path.write_text(
+        """<?xml version="1.0" encoding="utf-8"?>
+<eagle version="9.6.2">
+  <drawing>
+    <library>
+      <symbols>
+        <symbol name="S">
+          <wire x1="-1.27" y1="-1.27" x2="1.27" y2="-1.27" width="0.127" layer="94"/>
+          <wire x1="1.27" y1="-1.27" x2="1.27" y2="1.27" width="0.127" layer="94"/>
+          <wire x1="1.27" y1="1.27" x2="-1.27" y2="1.27" width="0.127" layer="94"/>
+          <wire x1="-1.27" y1="1.27" x2="-1.27" y2="-1.27" width="0.127" layer="94"/>
+          <pin name="P1" x="0" y="0" visible="pad" length="long" direction="pas" rot="R180"/>
+        </symbol>
+      </symbols>
+      <devicesets>
+        <deviceset name="DEVL" prefix="U">
+          <gates>
+            <gate name="G$1" symbol="S" x="0" y="0"/>
+          </gates>
+          <devices>
+            <device name="" package="PKG">
+              <connects>
+                <connect gate="G$1" pin="P1" pad="1"/>
+              </connects>
+              <technologies><technology name=""/></technologies>
+            </device>
+          </devices>
+        </deviceset>
+      </devicesets>
+    </library>
+  </drawing>
+</eagle>
+""",
+        encoding="utf-8",
+    )
+
+    offsets = _external_device_pin_offsets(lib_path, "DEVL")
+    assert "1" in offsets
+    # Pin is authored at body-side origin (0,0) with R180/long.
+    # Endpoint must be shifted outward (+X) by 7.62 mm.
+    assert abs(offsets["1"].x_mm - 7.62) < 1e-6
+    assert abs(offsets["1"].y_mm - 0.0) < 1e-6
+    assert offsets["1"].outward_dx == 1.0 and offsets["1"].outward_dy == 0.0
 
 
 def test_generated_symbol_outward_fallback_uses_pin_cloud_center_not_origin() -> None:
@@ -3839,8 +4097,9 @@ def test_board_builder_uses_effective_rotation_for_external_origin_offset_transf
 
     lines = BoardReconstructionBuilder().build_commands(project)
     assert "ROTATE =R90 'U1';" in lines
-    # Effective rotation is +90 (0 + external +90), so offset (1,2) rotates to (-2,1).
-    assert "MOVE U1 (8.0000 21.0000);" in lines
+    # External offset lives in the pre-external-rotation frame, so with
+    # source rotation 0 and external rotation +90 the move origin is (at + offset).
+    assert "MOVE U1 (11.0000 22.0000);" in lines
 
 
 def test_board_builder_emits_move_for_each_instance_with_exact_coordinates() -> None:

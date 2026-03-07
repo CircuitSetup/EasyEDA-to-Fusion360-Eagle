@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from easyeda2fusion.builders.normalizer import Normalizer
-from easyeda2fusion.model import SourceFormat
+from easyeda2fusion.model import ParsedDocument, ParsedSource, SourceFormat
 from easyeda2fusion.parsers.easyeda_pro import EasyEDAProParser
+from easyeda2fusion.parsers.easyeda_std import _legacy_pad_drill
 from easyeda2fusion.parsers import parse_easyeda_files
 
 
@@ -36,6 +37,111 @@ def test_standard_board_import(fixtures_dir):
     assert len(board.outline) == 1
     assert len(board.tracks) == 1
     assert len(board.vias) == 1
+
+
+def test_standard_legacy_shape_string_board_import(fixtures_dir):
+    parsed = parse_easyeda_files([fixtures_dir / "std_legacy_board_shape_strings.json"])
+    assert parsed.source_format == SourceFormat.EASYEDA_STD
+    assert any(doc.doc_type == "board" for doc in parsed.documents)
+    assert parsed.metadata.get("y_axis_inverted") is True
+    assert parsed.metadata.get("origin_raw") == {"x": 100.0, "y": 100.0}
+
+    result = Normalizer().normalize(parsed)
+    project = result.project
+    board = project.board
+    assert board is not None
+    assert len(board.tracks) == 2
+    assert len(board.holes) == 1
+    assert len(board.outline) == 1
+    assert len(board.text) == 1
+    assert abs(board.text[0].size_mm - 0.999998) < 1e-5
+    assert any(component.refdes == "R1" for component in project.components)
+    package = next(pkg for pkg in project.packages if pkg.package_id == "TEST-PKG")
+    assert len(package.pads) == 2
+    assert abs((package.pads[0].drill_mm or 0.0) - 1.016) < 1e-6
+    assert any(item.get("kind") == "wire_path" for item in package.outline)
+    assert all(not (item.get("kind") == "text" and item.get("text") == "R1") for item in package.outline)
+    assert any(net.name == "N1" and any(node.refdes == "R1" and node.pin == "1" for node in net.nodes) for net in project.nets)
+
+
+def test_standard_legacy_duplicate_refdes_are_renamed_and_nodes_follow(fixtures_dir):
+    parsed = parse_easyeda_files([fixtures_dir / "std_legacy_duplicate_refdes.json"])
+    result = Normalizer().normalize(parsed)
+    project = result.project
+
+    refs = sorted(component.refdes for component in project.components)
+    assert refs == ["K1", "K1_2"]
+
+    net_k1_3 = next(net for net in project.nets if net.name == "K1_3")
+    assert any(node.refdes == "K1_2" and node.pin == "1" for node in net_k1_3.nodes)
+
+
+def test_standard_legacy_copperarea_prefers_rich_path_payload(fixtures_dir):
+    parsed = parse_easyeda_files([fixtures_dir / "std_legacy_copperarea_path_payload.json"])
+    result = Normalizer().normalize(parsed)
+    board = result.project.board
+    assert board is not None
+    copper_regions = [region for region in board.regions if region.net == "GND"]
+    assert copper_regions
+    assert len(copper_regions[0].points) == 5
+
+
+def test_normalizer_mirrors_legacy_package_frame_when_component_pad_fit_requires_it():
+    parsed = ParsedSource(
+        source_format=SourceFormat.EASYEDA_STD,
+        input_files=[],
+        documents=[
+            ParsedDocument(
+                doc_type="board",
+                name="legacy_board",
+                raw_objects=[
+                    {
+                        "type": "component",
+                        "refdes": "K1",
+                        "package_id": "PKG_RELAY",
+                        "x": 50.0,
+                        "y": 50.0,
+                        "rotation": 90.0,
+                        "side": "top",
+                    },
+                    {
+                        "type": "package",
+                        "id": "PKG_RELAY",
+                        "name": "PKG_RELAY",
+                        "pads": [
+                            {"number": "1", "x": 1.0, "y": 0.0, "width": 1.0, "height": 1.0, "shape": "round"},
+                            {"number": "2", "x": -1.0, "y": 0.0, "width": 1.0, "height": 1.0, "shape": "round"},
+                            {"number": "3", "x": 2.0, "y": 1.0, "width": 1.0, "height": 1.0, "shape": "round"},
+                        ],
+                    },
+                    # Absolute board pads correspond to mirrored-local package frame.
+                    {"type": "pad", "number": "1", "x": 50.0, "y": 49.0, "width": 1.0, "height": 1.0, "shape": "round"},
+                    {"type": "pad", "number": "2", "x": 50.0, "y": 51.0, "width": 1.0, "height": 1.0, "shape": "round"},
+                    {"type": "pad", "number": "3", "x": 49.0, "y": 48.0, "width": 1.0, "height": 1.0, "shape": "round"},
+                ],
+                metadata={},
+            )
+        ],
+        layers=[],
+        rules=[],
+        metadata={
+            "legacy_shape_string_mode": True,
+            "coordinate_scale_to_mm": 1.0,
+        },
+        events=[],
+    )
+
+    result = Normalizer().normalize(parsed)
+    project = result.project
+    package = next(pkg for pkg in project.packages if pkg.package_id == "PKG_RELAY")
+    x_coords = sorted(round(float(pad.at.x_mm), 6) for pad in package.pads)
+    assert x_coords == [-2.0, -1.0, 1.0]
+    assert any(event.code == "LEGACY_PACKAGE_LOCAL_FRAME_MIRRORED" for event in project.events)
+
+
+def test_standard_legacy_pad_drill_recovers_diameter_from_primary_radius_value():
+    parts = ["PAD", "ELLIPSE", "0", "0", "8", "8", "11", "", "1", "2.36", "", "", "", "0"]
+    assert abs(_legacy_pad_drill(parts, width=8.0, height=8.0) - 4.72) < 1e-9
 
 
 def test_pro_board_import(fixtures_dir):

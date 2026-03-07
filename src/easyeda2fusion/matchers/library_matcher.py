@@ -1361,7 +1361,32 @@ def _stage2_screw_terminal(component: Component, entries: list[LibraryEntry]) ->
         return []
 
     best = max(score for score, _ in ranked)
-    return [entry for score, entry in ranked if score == best]
+    best_entries = [entry for score, entry in ranked if score == best]
+    if len(best_entries) <= 1:
+        return best_entries
+
+    signatures = {
+        (
+            _norm(entry.device_name),
+            _norm(entry.package_name),
+            _norm(entry.symbol_name),
+        )
+        for entry in best_entries
+    }
+    if len(signatures) == 1:
+        # Equivalent candidates from multiple sources should not force a new
+        # generated part. Pick one deterministically.
+        chosen = sorted(
+            best_entries,
+            key=lambda entry: (
+                _norm(entry.library_name or ""),
+                _norm(entry.device_name),
+                _norm(entry.package_name),
+                _norm(entry.add_token),
+            ),
+        )[0]
+        return [chosen]
+    return best_entries
 
 
 def _dedupe_candidate_entries(entries: list[LibraryEntry]) -> list[LibraryEntry]:
@@ -1468,6 +1493,8 @@ def _extract_pin_count(value: str | None) -> int | None:
         return None
     patterns = (
         r"(?:QFN|TQFN|DFN|SOIC|SOP|HSOP|HSSOP|MSOP|SSOP|TSSOP|TSOP|LQFP|QFP)[-_ ]?(\d{1,3})",
+        r"SCREWTERMINAL[-_ ]?(?:\d+(?:\.\d+)?MM[-_ ]?)?(\d{1,2})(?:[^0-9]|$)",
+        r"CONN[_-]?0?(\d{1,2})(?=[._-]?\d+(?:\.\d+)?MM)",
         r"1X(\d{1,2})",
         r"(?:^|[^0-9])(\d{1,2})P(?:[^A-Z0-9]|$)",
         r"S(\d{1,2})B",
@@ -1646,11 +1673,44 @@ def _external_package_match_is_compatible(
         _clear_component_external_origin_offset(component)
         return False, strict_reason or relaxed_reason
     if class_name == "connector" and _is_screw_terminal_component(component):
-        _clear_component_external_origin_offset(component)
-        return _screw_terminal_package_geometry_is_compatible(
+        screw_ok, screw_reason = _screw_terminal_package_geometry_is_compatible(
             source_package=source_package,
             external_pads=external_geometry,
         )
+        if not screw_ok:
+            _clear_component_external_origin_offset(component)
+            return False, screw_reason
+
+        strict_ok, strict_reason = _package_geometry_is_compatible(source_package, external_geometry)
+        if strict_ok:
+            _clear_component_external_origin_offset(component)
+            return True, None
+
+        if strict_reason and strict_reason.startswith("pad_origin_mismatch:"):
+            translation_ok, transform = _package_geometry_translation_is_compatible(
+                source_package=source_package,
+                external_pads=external_geometry,
+            )
+            if translation_ok and transform is not None:
+                rotation_delta = int(transform.rotation_deg) % 360
+                if strict_board_fidelity and rotation_delta:
+                    # For linear screw terminals, a 180deg relaxed transform can
+                    # match pad clouds while flipping connector body orientation.
+                    # In strict board-fidelity mode, prefer local footprint
+                    # generation over forcing external rotation-based remaps.
+                    _clear_component_external_origin_offset(component)
+                    return False, "screw_terminal_origin_requires_rotation"
+                _set_component_external_origin_offset(component, transform)
+                return True, f"relaxed_origin_only:{strict_reason}"
+
+        # Without board-fidelity constraints (schematic-only flows), keep the
+        # previous screw-terminal behavior if pitch/count/size still align.
+        if not strict_board_fidelity:
+            _clear_component_external_origin_offset(component)
+            return True, screw_reason
+
+        _clear_component_external_origin_offset(component)
+        return False, strict_reason or screw_reason
     strict_ok, strict_reason = _package_geometry_is_compatible(source_package, external_geometry)
     if strict_ok:
         _clear_component_external_origin_offset(component)

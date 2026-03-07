@@ -5,6 +5,8 @@ import re
 
 from easyeda2fusion.model import Package, Project, Severity, Side, SourceFormat, project_event
 
+_DEFAULT_POLYGON_WIDTH_MM = 0.254
+
 
 class BoardReconstructionBuilder:
     """Builds EAGLE script command lines for board reconstruction."""
@@ -78,6 +80,9 @@ class BoardReconstructionBuilder:
             for signal_name, pairs in signal_pairs_by_name.items():
                 if len(pairs) >= 2:
                     lines.append(f"SIGNAL {_quote_token(signal_name)} {' '.join(pairs)};")
+
+        if board.outline:
+            lines.extend(_emit_remove_existing_board_outline())
 
         for outline in board.outline:
             lines.extend(_emit_region_wires(outline.layer, outline.points, width_mm=0.0, close=True))
@@ -174,6 +179,7 @@ class BoardReconstructionBuilder:
                     source_format=project.source_format,
                     layer_num=layer_num,
                     rotation_deg=float(text.rotation_deg or 0.0),
+                    y_axis_inverted=bool(project.metadata.get("y_axis_inverted", False)),
                 )
                 orient = f"MR{rotation}" if mirrored else f"R{rotation}"
                 lines.append(
@@ -304,10 +310,11 @@ def _emit_copper_polygon(layer: str, net_name: str, points) -> list[str]:
     layer_num = _layer_number(str(layer))
     if not _is_copper_layer_num(layer_num):
         return []
+    layer_cmd = _track_layer_command_token(layer_num)
     coords = " ".join(f"({pt.x_mm:.4f} {pt.y_mm:.4f})" for pt in cleaned)
     return [
-        f"LAYER {layer_num};",
-        f"POLYGON {_quote_token(net_name)} 0 {coords};",
+        f"LAYER {layer_cmd};",
+        f"POLYGON {_quote_token(net_name)} {_DEFAULT_POLYGON_WIDTH_MM:.4f} {coords};",
     ]
 
 
@@ -321,7 +328,19 @@ def _emit_keepout_polygon(layer: str, points) -> list[str]:
     coords = " ".join(f"({pt.x_mm:.4f} {pt.y_mm:.4f})" for pt in cleaned)
     return [
         f"LAYER {layer_num};",
-        f"POLYGON 0 {coords};",
+        f"POLYGON {_DEFAULT_POLYGON_WIDTH_MM:.4f} {coords};",
+    ]
+
+
+def _emit_remove_existing_board_outline() -> list[str]:
+    # Clear existing board-outline entities on the Dimension layer before
+    # reconstructing source outline geometry to avoid duplicate outlines.
+    return [
+        "DISPLAY NONE 20;",
+        "LAYER 20;",
+        "GROUP (-100000.0000 -100000.0000) (100000.0000 100000.0000);",
+        "DELETE (> -100000.0000 -100000.0000);",
+        "DISPLAY ALL;",
     ]
 
 
@@ -485,8 +504,24 @@ def _component_move_point_mm(component, effective_rotation_deg: float | None = N
     if component.side == Side.BOTTOM:
         dx = -dx
 
-    rotation_deg = float(component.rotation_deg or 0.0) if effective_rotation_deg is None else float(effective_rotation_deg)
-    angle = math.radians(rotation_deg)
+    rotation_for_offset_deg = (
+        float(component.rotation_deg or 0.0)
+        if effective_rotation_deg is None
+        else float(effective_rotation_deg)
+    )
+    # External library transforms encode pad mapping as:
+    #   source_local = rotate(external_local, external_rot) + offset
+    # Move offset therefore lives in the pre-external-rotation local frame and
+    # must be rotated by the base instance rotation, not by the fully effective
+    # rotation that already includes external_rot.
+    if effective_rotation_deg is not None:
+        try:
+            external_rot = float(attrs.get("_external_rotation_offset_deg", 0.0))
+        except Exception:
+            external_rot = 0.0
+        rotation_for_offset_deg = float(effective_rotation_deg) - external_rot
+
+    angle = math.radians(rotation_for_offset_deg)
     cos_a = math.cos(angle)
     sin_a = math.sin(angle)
     ox = dx * cos_a - dy * sin_a
@@ -498,8 +533,13 @@ def _board_text_rotation_deg(
     source_format: SourceFormat,
     layer_num: str,
     rotation_deg: float,
+    y_axis_inverted: bool = False,
 ) -> int:
     angle = int(round(float(rotation_deg or 0.0))) % 360
+    if y_axis_inverted and source_format == SourceFormat.EASYEDA_STD:
+        # Legacy Standard shape-string exports mirror Y coordinates in
+        # normalization; mirror text angle so visual orientation is preserved.
+        angle = (-angle) % 360
     if source_format == SourceFormat.EASYEDA_PRO and layer_num in {"21", "22"}:
         # EasyEDA Pro board STRING rotation is clockwise-positive on silkscreen.
         # EAGLE rotation is counter-clockwise-positive.
@@ -811,43 +851,173 @@ def _standalone_board_pads(project: Project, board_pads) -> list:
     if not board_pads:
         return []
     component_pad_points = _component_pad_positions(project)
+    if not component_pad_points:
+        return list(board_pads)
+
+    index_grid_mm = 0.25
+    match_tol_mm = 0.20
+    indexed_points = _index_component_pad_points(component_pad_points, index_grid_mm)
     out = []
     for pad in board_pads:
-        key = (round(float(pad.at.x_mm), 3), round(float(pad.at.y_mm), 3))
-        if key in component_pad_points:
+        px = float(pad.at.x_mm)
+        py = float(pad.at.y_mm)
+        if _has_component_pad_match(
+            indexed_points=indexed_points,
+            x_mm=px,
+            y_mm=py,
+            grid_mm=index_grid_mm,
+            tolerance_mm=match_tol_mm,
+        ):
             continue
         out.append(pad)
     return out
 
 
 def _component_pad_positions(project: Project) -> set[tuple[float, float]]:
-    package_lookup = {}
-    for package in project.packages:
-        package_lookup[package.package_id] = package
-        package_lookup[package.name] = package
+    package_lookup = _package_lookup(project)
+    board_pad_points: list[tuple[float, float]] = []
+    if project.board is not None:
+        board_pad_points = [
+            (float(pad.at.x_mm), float(pad.at.y_mm))
+            for pad in project.board.pads
+        ]
 
     points: set[tuple[float, float]] = set()
     for component in project.components:
-        package_id = str(component.package_id or "").strip()
-        if not package_id:
-            continue
-        package = package_lookup.get(package_id)
+        package = _resolve_component_package(component, package_lookup)
         if package is None:
             continue
-        angle = math.radians(float(component.rotation_deg or 0.0))
-        cos_a = math.cos(angle)
-        sin_a = math.sin(angle)
-        for pad in package.pads:
-            px = float(pad.at.x_mm)
-            py = float(pad.at.y_mm)
-            if component.side == Side.BOTTOM:
-                px = -px
-            rx = px * cos_a - py * sin_a
-            ry = px * sin_a + py * cos_a
-            ax = float(component.at.x_mm) + rx
-            ay = float(component.at.y_mm) + ry
+        effective_rotation_deg = _resolved_board_component_rotation_deg(
+            component=component,
+            source_format=project.source_format,
+            package=package,
+        )
+        origin_x, origin_y = _component_move_point_mm(
+            component,
+            effective_rotation_deg=effective_rotation_deg,
+        )
+
+        transformed = _component_package_pad_world_points(
+            component=component,
+            package=package,
+            origin_x_mm=float(origin_x),
+            origin_y_mm=float(origin_y),
+            rotation_deg=float(effective_rotation_deg or 0.0),
+            board_pad_points=board_pad_points,
+        )
+        for ax, ay in transformed:
             points.add((round(ax, 3), round(ay, 3)))
     return points
+
+
+def _component_package_pad_world_points(
+    component,
+    package: Package,
+    origin_x_mm: float,
+    origin_y_mm: float,
+    rotation_deg: float,
+    board_pad_points: list[tuple[float, float]],
+) -> list[tuple[float, float]]:
+    variants = [(False, False), (True, False), (False, True), (True, True)]
+    scored: list[tuple[float, list[tuple[float, float]]]] = []
+    for mirror_x, mirror_y in variants:
+        transformed = _transform_package_pad_points(
+            component=component,
+            package=package,
+            origin_x_mm=origin_x_mm,
+            origin_y_mm=origin_y_mm,
+            rotation_deg=rotation_deg,
+            mirror_x=mirror_x,
+            mirror_y=mirror_y,
+        )
+        score = _pad_fit_score(transformed, board_pad_points)
+        scored.append((score, transformed))
+
+    scored.sort(key=lambda item: (item[0], len(item[1])))
+    return scored[0][1] if scored else []
+
+
+def _transform_package_pad_points(
+    component,
+    package: Package,
+    origin_x_mm: float,
+    origin_y_mm: float,
+    rotation_deg: float,
+    mirror_x: bool,
+    mirror_y: bool,
+) -> list[tuple[float, float]]:
+    out: list[tuple[float, float]] = []
+    angle = math.radians(float(rotation_deg or 0.0))
+    cos_a = math.cos(angle)
+    sin_a = math.sin(angle)
+    for pad in package.pads:
+        px = float(pad.at.x_mm)
+        py = float(pad.at.y_mm)
+        if mirror_x:
+            px = -px
+        if mirror_y:
+            py = -py
+        if component.side == Side.BOTTOM:
+            px = -px
+        rx = px * cos_a - py * sin_a
+        ry = px * sin_a + py * cos_a
+        out.append((float(origin_x_mm) + rx, float(origin_y_mm) + ry))
+    return out
+
+
+def _pad_fit_score(
+    transformed: list[tuple[float, float]],
+    board_pad_points: list[tuple[float, float]],
+) -> float:
+    if not transformed:
+        return float("inf")
+    if not board_pad_points:
+        return 0.0
+    total = 0.0
+    for x_mm, y_mm in transformed:
+        best = min(
+            (x_mm - px) * (x_mm - px) + (y_mm - py) * (y_mm - py)
+            for px, py in board_pad_points
+        )
+        total += math.sqrt(best)
+    return total / float(len(transformed))
+
+
+def _index_component_pad_points(
+    points: set[tuple[float, float]],
+    grid_mm: float,
+) -> dict[tuple[int, int], list[tuple[float, float]]]:
+    index: dict[tuple[int, int], list[tuple[float, float]]] = {}
+    if grid_mm <= 0.0:
+        return index
+    for x_mm, y_mm in points:
+        key = (int(round(float(x_mm) / grid_mm)), int(round(float(y_mm) / grid_mm)))
+        index.setdefault(key, []).append((float(x_mm), float(y_mm)))
+    return index
+
+
+def _has_component_pad_match(
+    indexed_points: dict[tuple[int, int], list[tuple[float, float]]],
+    x_mm: float,
+    y_mm: float,
+    grid_mm: float,
+    tolerance_mm: float,
+) -> bool:
+    if not indexed_points or grid_mm <= 0.0:
+        return False
+    center_key = (int(round(float(x_mm) / grid_mm)), int(round(float(y_mm) / grid_mm)))
+    tol_sq = float(tolerance_mm) * float(tolerance_mm)
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            bucket = indexed_points.get((center_key[0] + dx, center_key[1] + dy))
+            if not bucket:
+                continue
+            for px, py in bucket:
+                ddx = float(x_mm) - float(px)
+                ddy = float(y_mm) - float(py)
+                if (ddx * ddx + ddy * ddy) <= tol_sq:
+                    return True
+    return False
 
 
 def _via_shape_from_pad_shape(shape: str) -> str:

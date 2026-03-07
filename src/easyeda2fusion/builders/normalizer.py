@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -89,6 +90,7 @@ class Normalizer:
                     )
                 )
 
+        self._harmonize_legacy_package_local_frames(project)
         self._attach_default_board_layers(project)
         return NormalizationResult(project=project, layer_report=layer_report)
 
@@ -184,6 +186,9 @@ class Normalizer:
             elif typ in {"component", "footprint_instance", "placement"}:
                 component = self._component_from_obj(obj, unit_norm, sheet_id=None)
                 _upsert_component(project.components, component)
+            elif typ in {"package", "footprint", "package_def"}:
+                pkg = self._package_from_obj(obj, unit_norm)
+                _upsert_package(project.packages, pkg)
             elif typ in {"net", "board_net"}:
                 _upsert_net(project.nets, self._net_from_obj(obj))
             elif typ in {"mechanical", "fab_note"}:
@@ -198,6 +203,8 @@ class Normalizer:
                     )
                 )
                 project.metadata.setdefault("unsupported_board_objects", []).append(obj)
+
+        self._ensure_board_outline(project, board)
 
     @staticmethod
     def _component_from_obj(obj: dict[str, Any], unit_norm: UnitNormalizer, sheet_id: str | None) -> Component:
@@ -367,7 +374,7 @@ class Normalizer:
             for raw_pad in raw_pads:
                 if not isinstance(raw_pad, dict):
                     continue
-                pads.append(Normalizer._pad_from_obj(raw_pad, unit_norm))
+                pads.append(Normalizer._package_pad_from_obj(raw_pad, unit_norm))
 
         outline: list[dict[str, Any]] = []
         raw_outline = obj.get("outline")
@@ -382,16 +389,44 @@ class Normalizer:
                     raw_points = item.get("points")
                     if isinstance(raw_points, list):
                         for point in raw_points:
-                            if not isinstance(point, (list, tuple)) or len(point) < 2:
-                                continue
-                            x_mm, y_mm = unit_norm.to_mm(point[0], point[1])
-                            points.append({"x_mm": x_mm, "y_mm": y_mm})
+                            if isinstance(point, dict):
+                                if "x_mm" in point and "y_mm" in point:
+                                    points.append(
+                                        {
+                                            "x_mm": float(point.get("x_mm", 0.0)),
+                                            "y_mm": float(point.get("y_mm", 0.0)),
+                                        }
+                                    )
+                                    continue
+                                if "x_local" in point and "y_local" in point:
+                                    points.append(
+                                        {
+                                            "x_mm": unit_norm.scalar_to_mm(float(point.get("x_local", 0.0))),
+                                            "y_mm": unit_norm.scalar_to_mm(float(point.get("y_local", 0.0))),
+                                        }
+                                    )
+                                    continue
+                                if "x" in point and "y" in point:
+                                    x_mm = unit_norm.scalar_to_mm(float(point["x"]))
+                                    y_mm = unit_norm.scalar_to_mm(float(point["y"]))
+                                    points.append({"x_mm": x_mm, "y_mm": y_mm})
+                                    continue
+                            if isinstance(point, (list, tuple)) and len(point) >= 2:
+                                x_mm = unit_norm.scalar_to_mm(float(point[0]))
+                                y_mm = unit_norm.scalar_to_mm(float(point[1]))
+                                points.append({"x_mm": x_mm, "y_mm": y_mm})
                     if len(points) >= 2:
+                        if "width_mm" in item:
+                            width_mm = float(item.get("width_mm", 0.2))
+                        elif "width_local" in item:
+                            width_mm = unit_norm.scalar_to_mm(float(item.get("width_local", 0.2)))
+                        else:
+                            width_mm = unit_norm.scalar_to_mm(float(item.get("width", 0.2)))
                         outline.append(
                             {
                                 "kind": "wire_path",
                                 "layer": layer,
-                                "width_mm": unit_norm.scalar_to_mm(float(item.get("width", 0.2))),
+                                "width_mm": width_mm,
                                 "points": points,
                             }
                         )
@@ -402,29 +437,65 @@ class Normalizer:
                     raw_points = item.get("points")
                     if isinstance(raw_points, list):
                         for point in raw_points:
-                            if not isinstance(point, (list, tuple)) or len(point) < 2:
-                                continue
-                            x_mm, y_mm = unit_norm.to_mm(point[0], point[1])
-                            points.append({"x_mm": x_mm, "y_mm": y_mm})
+                            if isinstance(point, dict):
+                                if "x_mm" in point and "y_mm" in point:
+                                    points.append(
+                                        {
+                                            "x_mm": float(point.get("x_mm", 0.0)),
+                                            "y_mm": float(point.get("y_mm", 0.0)),
+                                        }
+                                    )
+                                    continue
+                                if "x_local" in point and "y_local" in point:
+                                    points.append(
+                                        {
+                                            "x_mm": unit_norm.scalar_to_mm(float(point.get("x_local", 0.0))),
+                                            "y_mm": unit_norm.scalar_to_mm(float(point.get("y_local", 0.0))),
+                                        }
+                                    )
+                                    continue
+                                if "x" in point and "y" in point:
+                                    x_mm = unit_norm.scalar_to_mm(float(point["x"]))
+                                    y_mm = unit_norm.scalar_to_mm(float(point["y"]))
+                                    points.append({"x_mm": x_mm, "y_mm": y_mm})
+                                    continue
+                            if isinstance(point, (list, tuple)) and len(point) >= 2:
+                                x_mm = unit_norm.scalar_to_mm(float(point[0]))
+                                y_mm = unit_norm.scalar_to_mm(float(point[1]))
+                                points.append({"x_mm": x_mm, "y_mm": y_mm})
                     if len(points) >= 3:
+                        if "width_mm" in item:
+                            width_mm = float(item.get("width_mm", 0.2))
+                        elif "width_local" in item:
+                            width_mm = unit_norm.scalar_to_mm(float(item.get("width_local", 0.2)))
+                        else:
+                            width_mm = unit_norm.scalar_to_mm(float(item.get("width", 0.2)))
                         outline.append(
                             {
                                 "kind": "polygon",
                                 "layer": layer,
-                                "width_mm": unit_norm.scalar_to_mm(float(item.get("width", item.get("width_mm", 0.2)))),
+                                "width_mm": width_mm,
                                 "points": points,
                             }
                         )
                     continue
 
                 if kind == "hole":
-                    x_mm, y_mm = unit_norm.to_mm(
-                        float(item.get("x", item.get("x_mm", 0.0))),
-                        float(item.get("y", item.get("y_mm", 0.0))),
-                    )
-                    drill_mm = unit_norm.scalar_to_mm(
-                        float(item.get("drill", item.get("drill_mm", 0.0)))
-                    )
+                    if "x_mm" in item and "y_mm" in item:
+                        x_mm = float(item.get("x_mm", 0.0))
+                        y_mm = float(item.get("y_mm", 0.0))
+                    elif "x_local" in item and "y_local" in item:
+                        x_mm = unit_norm.scalar_to_mm(float(item.get("x_local", 0.0)))
+                        y_mm = unit_norm.scalar_to_mm(float(item.get("y_local", 0.0)))
+                    else:
+                        x_mm = unit_norm.scalar_to_mm(float(item.get("x", 0.0)))
+                        y_mm = unit_norm.scalar_to_mm(float(item.get("y", 0.0)))
+                    if "drill_mm" in item:
+                        drill_mm = float(item.get("drill_mm", 0.0))
+                    elif "drill_local" in item:
+                        drill_mm = unit_norm.scalar_to_mm(float(item.get("drill_local", 0.0)))
+                    else:
+                        drill_mm = unit_norm.scalar_to_mm(float(item.get("drill", 0.0)))
                     if drill_mm > 0.0:
                         outline.append(
                             {
@@ -438,7 +509,21 @@ class Normalizer:
                     continue
 
                 if kind == "text":
-                    x_mm, y_mm = unit_norm.to_mm(item.get("x", 0.0), item.get("y", 0.0))
+                    if "x_mm" in item and "y_mm" in item:
+                        x_mm = float(item.get("x_mm", 0.0))
+                        y_mm = float(item.get("y_mm", 0.0))
+                    elif "x_local" in item and "y_local" in item:
+                        x_mm = unit_norm.scalar_to_mm(float(item.get("x_local", 0.0)))
+                        y_mm = unit_norm.scalar_to_mm(float(item.get("y_local", 0.0)))
+                    else:
+                        x_mm = unit_norm.scalar_to_mm(float(item.get("x", 0.0)))
+                        y_mm = unit_norm.scalar_to_mm(float(item.get("y", 0.0)))
+                    if item.get("size_mm") is not None:
+                        size_mm = float(item.get("size_mm", 1.0))
+                    elif "size_local" in item:
+                        size_mm = unit_norm.scalar_to_mm(float(item.get("size_local", 1.0)))
+                    else:
+                        size_mm = unit_norm.scalar_to_mm(float(item.get("size", 20.0)))
                     outline.append(
                         {
                             "kind": "text",
@@ -446,12 +531,59 @@ class Normalizer:
                             "text": str(item.get("text") or ""),
                             "x_mm": x_mm,
                             "y_mm": y_mm,
-                            "size_mm": unit_norm.scalar_to_mm(float(item.get("size", 20.0))),
+                            "size_mm": size_mm,
                             "rotation_deg": float(item.get("rotation", 0.0) or 0.0),
                         }
                     )
 
         return Package(package_id=package_id, name=package_name, pads=pads, outline=outline)
+
+    @staticmethod
+    def _package_pad_from_obj(obj: dict[str, Any], unit_norm: UnitNormalizer) -> Pad:
+        if "x_mm" in obj and "y_mm" in obj:
+            x = float(obj.get("x_mm", 0.0))
+            y = float(obj.get("y_mm", 0.0))
+        elif "x_local" in obj and "y_local" in obj:
+            x = unit_norm.scalar_to_mm(float(obj.get("x_local", 0.0)))
+            y = unit_norm.scalar_to_mm(float(obj.get("y_local", 0.0)))
+        else:
+            x = unit_norm.scalar_to_mm(float(obj.get("x", obj.get("pos_x", 0.0))))
+            y = unit_norm.scalar_to_mm(float(obj.get("y", obj.get("pos_y", 0.0))))
+
+        if "width_mm" in obj:
+            width_mm = float(obj.get("width_mm", 1.0))
+        elif "width_local" in obj:
+            width_mm = unit_norm.scalar_to_mm(float(obj.get("width_local", 1.0)))
+        else:
+            width_mm = unit_norm.scalar_to_mm(float(obj.get("width", obj.get("w", 1.0))))
+
+        if "height_mm" in obj:
+            height_mm = float(obj.get("height_mm", 1.0))
+        elif "height_local" in obj:
+            height_mm = unit_norm.scalar_to_mm(float(obj.get("height_local", 1.0)))
+        else:
+            height_mm = unit_norm.scalar_to_mm(float(obj.get("height", obj.get("h", 1.0))))
+
+        if obj.get("drill") is None and obj.get("drill_local") is None and obj.get("drill_mm") is None:
+            drill_mm = None
+        elif "drill_mm" in obj:
+            drill_mm = float(obj.get("drill_mm", 0.0))
+        elif "drill_local" in obj:
+            drill_mm = unit_norm.scalar_to_mm(float(obj.get("drill_local", 0.0)))
+        else:
+            drill_mm = unit_norm.scalar_to_mm(float(obj.get("drill", 0.0)))
+
+        return Pad(
+            pad_number=str(obj.get("number") or obj.get("pad") or obj.get("name") or ""),
+            at=Point(x, y),
+            shape=str(obj.get("shape", "rect")),
+            width_mm=width_mm,
+            height_mm=height_mm,
+            drill_mm=drill_mm,
+            layer=str(obj.get("layer", "top_copper")),
+            rotation_deg=float(obj.get("rotation", obj.get("rot", 0.0)) or 0.0),
+            net=_empty_to_none(obj.get("net") or obj.get("net_name")),
+        )
 
     @staticmethod
     def _arc_from_obj(obj: dict[str, Any], unit_norm: UnitNormalizer) -> Arc:
@@ -510,11 +642,15 @@ class Normalizer:
     @staticmethod
     def _text_from_obj(obj: dict[str, Any], unit_norm: UnitNormalizer, layer: str) -> TextItem:
         x, y = _point_from_obj(obj, unit_norm)
+        if obj.get("size_mm") is not None:
+            size_mm = float(obj.get("size_mm", 1.2))
+        else:
+            size_mm = unit_norm.scalar_to_mm(float(obj.get("size", obj.get("font_size", 1.2))))
         return TextItem(
             text=str(obj.get("text") or obj.get("value") or ""),
             at=Point(x, y),
             layer=layer,
-            size_mm=unit_norm.scalar_to_mm(float(obj.get("size", obj.get("font_size", 1.2)))),
+            size_mm=size_mm,
             rotation_deg=float(obj.get("rotation", obj.get("rot", 0.0)) or 0.0),
             mirrored=bool(obj.get("mirrored", False)),
         )
@@ -526,10 +662,284 @@ class Normalizer:
         if not project.board.layers:
             project.board.layers.extend(project.layers)
 
+    @staticmethod
+    def _ensure_board_outline(project: Project, board: Board) -> None:
+        if board.outline:
+            return
+        if not board.regions:
+            return
+
+        candidates: list[tuple[float, Region]] = []
+        for region in board.regions:
+            if len(region.points) < 3:
+                continue
+            layer_token = str(region.layer or "").strip().lower()
+            if layer_token not in {
+                "1",
+                "2",
+                "top",
+                "bottom",
+                "top_copper",
+                "bottom_copper",
+                "toplayer",
+                "bottomlayer",
+            }:
+                continue
+            area = abs(_polygon_area_mm2(region.points))
+            if area <= 0.0:
+                continue
+            candidates.append((area, region))
+
+        if not candidates:
+            return
+        candidates.sort(key=lambda pair: pair[0], reverse=True)
+        best_region = candidates[0][1]
+        board.outline.append(
+            Region(
+                region_id=f"inferred_outline_{best_region.region_id}",
+                layer="dimension",
+                points=[Point(point.x_mm, point.y_mm) for point in best_region.points],
+                net=None,
+                kind="outline",
+            )
+        )
+        project.events.append(
+            project_event(
+                Severity.WARNING,
+                "OUTLINE_INFERRED_FROM_REGION",
+                "Board outline inferred from largest copper region because explicit outline was missing",
+                {
+                    "source_region_id": best_region.region_id,
+                    "source_layer": best_region.layer,
+                },
+            )
+        )
+
+    @staticmethod
+    def _harmonize_legacy_package_local_frames(project: Project) -> None:
+        if project.source_format != SourceFormat.EASYEDA_STD:
+            return
+        if not bool(project.metadata.get("legacy_shape_string_mode", False)):
+            return
+        if project.board is None or not project.board.pads:
+            return
+
+        package_lookup: dict[str, Package] = {}
+        for package in project.packages:
+            package_lookup[package.package_id] = package
+            if package.name:
+                package_lookup[package.name] = package
+
+        components_by_package: dict[str, list[Component]] = {}
+        for component in project.components:
+            package_id = str(component.package_id or "").strip()
+            if not package_id:
+                continue
+            package = package_lookup.get(package_id)
+            if package is None or not package.pads:
+                continue
+            components_by_package.setdefault(package.package_id, []).append(component)
+
+        board_pad_points = [
+            (float(pad.at.x_mm), float(pad.at.y_mm))
+            for pad in project.board.pads
+        ]
+        variants = [(False, False), (True, False), (False, True), (True, True)]
+        mirror_applied: list[str] = []
+
+        for package_id, components in components_by_package.items():
+            package = package_lookup.get(package_id)
+            if package is None or len(package.pads) < 2:
+                continue
+
+            package_span = _package_span_mm(package)
+            search_radius_mm = max(8.0, package_span + 2.5)
+            scored: list[tuple[float, bool, bool]] = []
+            for mirror_x, mirror_y in variants:
+                aggregate = 0.0
+                samples = 0
+                for component in components:
+                    world_points = _component_package_world_points(
+                        component=component,
+                        package=package,
+                        mirror_x=mirror_x,
+                        mirror_y=mirror_y,
+                    )
+                    if not world_points:
+                        continue
+                    local_board = _nearby_points(
+                        board_pad_points,
+                        center_x=float(component.at.x_mm),
+                        center_y=float(component.at.y_mm),
+                        radius_mm=search_radius_mm,
+                    )
+                    targets = local_board if local_board else board_pad_points
+                    aggregate += _nearest_cloud_mean_distance(world_points, targets)
+                    samples += 1
+                if samples:
+                    scored.append((aggregate / float(samples), mirror_x, mirror_y))
+
+            if not scored:
+                continue
+            scored.sort(key=lambda item: item[0])
+            best_score, best_mx, best_my = scored[0]
+            identity_score = next(
+                (score for score, mx, my in scored if not mx and not my),
+                None,
+            )
+            if identity_score is None:
+                continue
+            if not (best_mx or best_my):
+                continue
+            if best_score >= 0.35:
+                continue
+            if (identity_score - best_score) < 0.20:
+                continue
+
+            _mirror_package_local_frame(package, mirror_x=best_mx, mirror_y=best_my)
+            mirror_applied.append(
+                f"{package.package_id}:{'MX' if best_mx else ''}{'MY' if best_my else ''}"
+            )
+
+        if mirror_applied:
+            project.events.append(
+                project_event(
+                    Severity.INFO,
+                    "LEGACY_PACKAGE_LOCAL_FRAME_MIRRORED",
+                    "Adjusted legacy STD package local frames to preserve board placement fidelity",
+                    {
+                        "count": len(mirror_applied),
+                        "packages": mirror_applied,
+                    },
+                )
+            )
+
 
 def _obj_type(obj: dict[str, Any]) -> str:
     typ = obj.get("type") or obj.get("kind") or obj.get("shape") or obj.get("obj")
     return str(typ).strip().lower()
+
+
+def _package_span_mm(package: Package) -> float:
+    if not package.pads:
+        return 0.0
+    xs = [float(pad.at.x_mm) for pad in package.pads]
+    ys = [float(pad.at.y_mm) for pad in package.pads]
+    span_x = max(xs) - min(xs) if xs else 0.0
+    span_y = max(ys) - min(ys) if ys else 0.0
+    return max(span_x, span_y)
+
+
+def _component_package_world_points(
+    component: Component,
+    package: Package,
+    mirror_x: bool,
+    mirror_y: bool,
+) -> list[tuple[float, float]]:
+    out: list[tuple[float, float]] = []
+    angle = math.radians(float(component.rotation_deg or 0.0))
+    cos_a = math.cos(angle)
+    sin_a = math.sin(angle)
+    cx = float(component.at.x_mm)
+    cy = float(component.at.y_mm)
+
+    for pad in package.pads:
+        px = float(pad.at.x_mm)
+        py = float(pad.at.y_mm)
+        if mirror_x:
+            px = -px
+        if mirror_y:
+            py = -py
+        if component.side == Side.BOTTOM:
+            px = -px
+        rx = px * cos_a - py * sin_a
+        ry = px * sin_a + py * cos_a
+        out.append((cx + rx, cy + ry))
+    return out
+
+
+def _nearby_points(
+    points: list[tuple[float, float]],
+    center_x: float,
+    center_y: float,
+    radius_mm: float,
+) -> list[tuple[float, float]]:
+    if radius_mm <= 0.0:
+        return []
+    out: list[tuple[float, float]] = []
+    radius_sq = float(radius_mm) * float(radius_mm)
+    for px, py in points:
+        dx = float(px) - float(center_x)
+        dy = float(py) - float(center_y)
+        if dx * dx + dy * dy <= radius_sq:
+            out.append((float(px), float(py)))
+    return out
+
+
+def _nearest_cloud_mean_distance(
+    source: list[tuple[float, float]],
+    targets: list[tuple[float, float]],
+) -> float:
+    if not source:
+        return float("inf")
+    if not targets:
+        return float("inf")
+    total = 0.0
+    for sx, sy in source:
+        best = min(
+            math.hypot(float(sx) - float(tx), float(sy) - float(ty))
+            for tx, ty in targets
+        )
+        total += best
+    return total / float(len(source))
+
+
+def _mirror_angle_deg(angle_deg: float, mirror_x: bool, mirror_y: bool) -> float:
+    angle = float(angle_deg or 0.0) % 360.0
+    if mirror_x:
+        angle = (180.0 - angle) % 360.0
+    if mirror_y:
+        angle = (-angle) % 360.0
+    return angle
+
+
+def _mirror_package_local_frame(package: Package, mirror_x: bool, mirror_y: bool) -> None:
+    if not (mirror_x or mirror_y):
+        return
+
+    for pad in package.pads:
+        x = -float(pad.at.x_mm) if mirror_x else float(pad.at.x_mm)
+        y = -float(pad.at.y_mm) if mirror_y else float(pad.at.y_mm)
+        pad.at = Point(x, y)
+        pad.rotation_deg = _mirror_angle_deg(float(pad.rotation_deg or 0.0), mirror_x, mirror_y)
+
+    for item in package.outline:
+        kind = str(item.get("kind") or "").strip().lower()
+        if kind in {"wire_path", "polygon"}:
+            points = item.get("points")
+            if isinstance(points, list):
+                for point in points:
+                    if not isinstance(point, dict):
+                        continue
+                    if "x_mm" in point:
+                        point["x_mm"] = -float(point.get("x_mm", 0.0)) if mirror_x else float(point.get("x_mm", 0.0))
+                    if "y_mm" in point:
+                        point["y_mm"] = -float(point.get("y_mm", 0.0)) if mirror_y else float(point.get("y_mm", 0.0))
+        elif kind == "hole":
+            if "x_mm" in item:
+                item["x_mm"] = -float(item.get("x_mm", 0.0)) if mirror_x else float(item.get("x_mm", 0.0))
+            if "y_mm" in item:
+                item["y_mm"] = -float(item.get("y_mm", 0.0)) if mirror_y else float(item.get("y_mm", 0.0))
+        elif kind == "text":
+            if "x_mm" in item:
+                item["x_mm"] = -float(item.get("x_mm", 0.0)) if mirror_x else float(item.get("x_mm", 0.0))
+            if "y_mm" in item:
+                item["y_mm"] = -float(item.get("y_mm", 0.0)) if mirror_y else float(item.get("y_mm", 0.0))
+            item["rotation_deg"] = _mirror_angle_deg(
+                float(item.get("rotation_deg", 0.0) or 0.0),
+                mirror_x,
+                mirror_y,
+            )
 
 
 def _point_from_obj(obj: dict[str, Any], unit_norm: UnitNormalizer) -> tuple[float, float]:
@@ -573,6 +983,16 @@ def _empty_to_none(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _polygon_area_mm2(points: list[Point]) -> float:
+    if len(points) < 3:
+        return 0.0
+    area2 = 0.0
+    for idx, point in enumerate(points):
+        nxt = points[(idx + 1) % len(points)]
+        area2 += point.x_mm * nxt.y_mm - nxt.x_mm * point.y_mm
+    return 0.5 * area2
 
 
 def _upsert_component(components: list[Component], incoming: Component) -> None:

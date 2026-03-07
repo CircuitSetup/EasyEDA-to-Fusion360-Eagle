@@ -1,0 +1,14 @@
+{
+  "head": {
+    "docType": "3",
+    "x": "100",
+    "y": "100"
+  },
+  "shape": [
+    "TRACK~1~1~N1~100 100 200 100 200 200~gge_track~0",
+    "COPPERAREA~1~1~GND~M 100 100 L 200 100 L 200 200 L 100 200 Z~1~solid~gge_ca~direct~none~[]~0~gge_ca~2~1~2~1~yes",
+    "HOLE~150~150~20~gge_h1~0",
+    "TEXT~L~120~180~0.8~90~0~3~~3.937~TEST LABEL~~gge_txt~~0~pinpart",
+    "LIB~150~120~package`TEST-PKG`spicePre`R`Manufacturer Part`RES-10K~0~~gge_lib1~1~pkg-uuid~0~~yes~~#@$TEXT~P~150~120~1~0~0~3~~4.5~R1~~gge_t1~~0~#@$TRACK~0.8~3~~140 120 160 120~gge_track_pkg~0#@$PAD~ELLIPSE~140~120~8~8~11~N1~1~2~~0~gge_p1~4~~Y~0~0~0.2~140,120#@$PAD~ELLIPSE~160~120~8~8~11~N2~2~2~~0~gge_p2~4~~Y~0~0~0.2~160,120"
+  ]
+}

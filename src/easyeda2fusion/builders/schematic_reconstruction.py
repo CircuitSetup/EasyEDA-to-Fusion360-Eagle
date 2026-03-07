@@ -4443,6 +4443,7 @@ def _symbol_pin_maps(library_el: ET.Element) -> dict[str, dict[str, _CanonicalPi
         symbol_name = str(symbol.get("name") or "").strip()
         if not symbol_name:
             continue
+        symbol_bounds = _symbol_graphic_bounds(symbol)
         pin_map: dict[str, _CanonicalPinLocal] = {}
         for pin in symbol.findall("./pin"):
             pin_name = str(pin.get("name") or "").strip()
@@ -4456,6 +4457,17 @@ def _symbol_pin_maps(library_el: ET.Element) -> dict[str, dict[str, _CanonicalPi
                 inward_dx = -inward_dx
             outward_dx = -inward_dx
             outward_dy = -inward_dy
+            pin_len_mm = _pin_length_mm(pin)
+            if _should_shift_pin_endpoint_by_length(
+                x_mm=x_mm,
+                y_mm=y_mm,
+                outward_dx=outward_dx,
+                outward_dy=outward_dy,
+                pin_length_mm=pin_len_mm,
+                symbol_bounds=symbol_bounds,
+            ):
+                x_mm += outward_dx * pin_len_mm
+                y_mm += outward_dy * pin_len_mm
             pin_map[pin_name] = _CanonicalPinLocal(
                 x_mm=x_mm,
                 y_mm=y_mm,
@@ -4465,6 +4477,89 @@ def _symbol_pin_maps(library_el: ET.Element) -> dict[str, dict[str, _CanonicalPi
         if pin_map:
             out[symbol_name] = pin_map
     return out
+
+
+def _pin_length_mm(pin_el: ET.Element) -> float:
+    token = str(pin_el.get("length") or "").strip().lower()
+    if not token:
+        return 0.0
+    named = {
+        "point": 0.0,
+        "short": 2.54,
+        "middle": 5.08,
+        "long": 7.62,
+    }
+    if token in named:
+        return named[token]
+    numeric = _safe_float(token)
+    if numeric <= 0.0:
+        return 0.0
+    return _coord_to_mm(numeric)
+
+
+def _symbol_graphic_bounds(symbol_el: ET.Element) -> tuple[float, float, float, float] | None:
+    xs: list[float] = []
+    ys: list[float] = []
+
+    def _append_xy(x_raw: object, y_raw: object) -> None:
+        xs.append(_coord_to_mm(_safe_float(x_raw)))
+        ys.append(_coord_to_mm(_safe_float(y_raw)))
+
+    for wire in symbol_el.findall("./wire"):
+        _append_xy(wire.get("x1"), wire.get("y1"))
+        _append_xy(wire.get("x2"), wire.get("y2"))
+
+    for rect in symbol_el.findall("./rectangle"):
+        _append_xy(rect.get("x1"), rect.get("y1"))
+        _append_xy(rect.get("x2"), rect.get("y2"))
+
+    for circle in symbol_el.findall("./circle"):
+        cx = _coord_to_mm(_safe_float(circle.get("x")))
+        cy = _coord_to_mm(_safe_float(circle.get("y")))
+        r = abs(_coord_to_mm(_safe_float(circle.get("radius"))))
+        xs.extend([cx - r, cx + r])
+        ys.extend([cy - r, cy + r])
+
+    for polygon in symbol_el.findall("./polygon"):
+        for vertex in polygon.findall("./vertex"):
+            _append_xy(vertex.get("x"), vertex.get("y"))
+
+    if not xs or not ys:
+        return None
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def _should_shift_pin_endpoint_by_length(
+    x_mm: float,
+    y_mm: float,
+    outward_dx: float,
+    outward_dy: float,
+    pin_length_mm: float,
+    symbol_bounds: tuple[float, float, float, float] | None,
+) -> bool:
+    if symbol_bounds is None:
+        return False
+    if pin_length_mm <= 0.0:
+        return False
+    margin_mm = 0.25
+    if not _point_in_bounds_with_margin(x_mm, y_mm, symbol_bounds, margin_mm):
+        return False
+    shifted_x = x_mm + outward_dx * pin_length_mm
+    shifted_y = y_mm + outward_dy * pin_length_mm
+    return not _point_in_bounds_with_margin(shifted_x, shifted_y, symbol_bounds, margin_mm)
+
+
+def _point_in_bounds_with_margin(
+    x_mm: float,
+    y_mm: float,
+    bounds: tuple[float, float, float, float],
+    margin_mm: float,
+) -> bool:
+    min_x, min_y, max_x, max_y = bounds
+    return (
+        (float(min_x) - margin_mm) <= float(x_mm) <= (float(max_x) + margin_mm)
+        and (float(min_y) - margin_mm) <= float(y_mm) <= (float(max_y) + margin_mm)
+    )
 
 
 def _safe_float(value: object) -> float:

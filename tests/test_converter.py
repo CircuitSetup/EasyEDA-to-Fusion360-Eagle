@@ -1322,6 +1322,149 @@ def test_screw_terminal_matching_prefers_pitch_and_pin_count() -> None:
     assert project.components[0].device_id == "con-lstb:SCREWTERMINAL-3.5MM-3"
 
 
+def test_screw_terminal_matching_collapses_equivalent_best_candidates() -> None:
+    project = Project(
+        project_id="p_screw_eq",
+        name="p_screw_eq",
+        source_format=SourceFormat.EASYEDA_PRO,
+        input_files=[],
+        components=[
+            Component(
+                refdes="CN2",
+                value="",
+                source_name="SCREWTERMINAL-3.5MM-2",
+                package_id=None,
+                at=Point(0.0, 0.0),
+            )
+        ],
+    )
+
+    entries = [
+        LibraryEntry(
+            device_name="CONN_023.5MM",
+            package_name="SCREWTERMINAL-3.5MM-2",
+            symbol_name="CONN_2",
+            component_class="connector",
+            library_name="lib_a",
+            add_token="con-lstb:CONN_023.5MM",
+        ),
+        LibraryEntry(
+            device_name="CONN_023.5MM",
+            package_name="SCREWTERMINAL-3.5MM-2",
+            symbol_name="CONN_2",
+            component_class="connector",
+            library_name="lib_b",
+            add_token="con-lstb:CONN_023.5MM",
+        ),
+    ]
+
+    ctx = LibraryMatcher().match(project, entries, match_mode=MatchMode.AUTO)
+    assert ctx.summary.auto_matched == 1
+    assert ctx.summary.created_new_parts == 0
+    assert project.components[0].device_id == "con-lstb:CONN_023.5MM"
+
+
+def test_screw_terminal_external_match_with_board_falls_back_when_only_rotated_origin_relaxation_fits(tmp_path) -> None:
+    external_lbr = tmp_path / "screw_conn.lbr"
+    external_lbr.write_text(
+        """<?xml version="1.0" encoding="utf-8"?>
+<eagle version="9.6.2">
+  <drawing>
+    <library>
+      <packages>
+        <package name="SCREWTERMINAL-3.5MM-3">
+          <pad name="1" x="0" y="0" drill="1.2" diameter="2.6" shape="round"/>
+          <pad name="2" x="-3.5" y="0" drill="1.2" diameter="2.6" shape="round"/>
+          <pad name="3" x="-7.0" y="0" drill="1.2" diameter="2.6" shape="round"/>
+        </package>
+      </packages>
+      <symbols>
+        <symbol name="CONN_3">
+          <pin name="1" x="-2.54" y="2.54"/>
+          <pin name="2" x="-2.54" y="0"/>
+          <pin name="3" x="-2.54" y="-2.54"/>
+        </symbol>
+      </symbols>
+      <devicesets>
+        <deviceset name="CONN_03SCREW">
+          <gates><gate name="G$1" symbol="CONN_3" x="0" y="0"/></gates>
+          <devices>
+            <device name="" package="SCREWTERMINAL-3.5MM-3">
+              <connects>
+                <connect gate="G$1" pin="1" pad="1"/>
+                <connect gate="G$1" pin="2" pad="2"/>
+                <connect gate="G$1" pin="3" pad="3"/>
+              </connects>
+              <technologies><technology name=""/></technologies>
+            </device>
+          </devices>
+        </deviceset>
+      </devicesets>
+    </library>
+  </drawing>
+</eagle>
+""",
+        encoding="utf-8",
+    )
+
+    project = Project(
+        project_id="p_screw_transform",
+        name="p_screw_transform",
+        source_format=SourceFormat.EASYEDA_STD,
+        input_files=[],
+        components=[
+            Component(
+                refdes="CN1",
+                value="",
+                source_name="SCREWTERMINAL-3.5MM-3",
+                package_id="SCREWTERMINAL-3.5MM-3",
+                at=Point(0.0, 0.0),
+            )
+        ],
+        packages=[
+            Package(
+                package_id="SCREWTERMINAL-3.5MM-3",
+                name="SCREWTERMINAL-3.5MM-3",
+                pads=[
+                    Pad(pad_number="1", at=Point(-3.5, 0.0), shape="round", width_mm=2.6, height_mm=2.6, drill_mm=1.2),
+                    Pad(pad_number="2", at=Point(0.0, 0.0), shape="round", width_mm=2.6, height_mm=2.6, drill_mm=1.2),
+                    Pad(pad_number="3", at=Point(3.5, 0.0), shape="round", width_mm=2.6, height_mm=2.6, drill_mm=1.2),
+                ],
+            )
+        ],
+        board=Board(),
+    )
+
+    entries = [
+        LibraryEntry(
+            device_name="CONN_03SCREW",
+            package_name="SCREWTERMINAL-3.5MM-3",
+            symbol_name="CONN_3",
+            component_class="connector",
+            library_name="SparkFun-Connectors",
+            add_token="SparkFun-Connectors:CONN_03SCREW",
+            library_path=str(external_lbr),
+        )
+    ]
+
+    ctx = LibraryMatcher().match(project, entries, match_mode=MatchMode.AUTO)
+    component = project.components[0]
+
+    assert ctx.summary.auto_matched == 0
+    assert ctx.summary.created_new_parts == 1
+    assert component.device_id is not None
+    assert component.device_id.startswith("easyeda_generated:")
+    assert "_external_origin_offset_x_mm" not in component.attributes
+    assert "_external_rotation_offset_deg" not in component.attributes
+    mismatch_events = [
+        event
+        for event in project.events
+        if event.code == "EXTERNAL_PACKAGE_GEOMETRY_MISMATCH"
+    ]
+    assert mismatch_events
+    assert mismatch_events[0].context.get("reason") == "screw_terminal_origin_requires_rotation"
+
+
 def test_generated_part_dedup_merges_identical_symbol_and_package() -> None:
     package = Package(
         package_id="PKG1",

@@ -1,0 +1,11 @@
+{
+  "head": {
+    "docType": "3",
+    "x": "0",
+    "y": "0"
+  },
+  "shape": [
+    "LIB~100~100~package`RELAY-PKG`spicePre`K~0~~gge_lib_a~1~pkg_relay~0~~yes~~#@$PAD~ELLIPSE~95~100~8~8~11~K1_1~1~2~~0~gge_pa1~4~~Y~0~0~0.2~95,100#@$PAD~ELLIPSE~105~100~8~8~11~K1_2~2~2~~0~gge_pa2~4~~Y~0~0~0.2~105,100",
+    "LIB~200~100~package`RELAY-PKG`spicePre`K~0~~gge_lib_b~1~pkg_relay~0~~yes~~#@$PAD~ELLIPSE~195~100~8~8~11~K1_3~1~2~~0~gge_pb1~4~~Y~0~0~0.2~195,100#@$PAD~ELLIPSE~205~100~8~8~11~K1_4~2~2~~0~gge_pb2~4~~Y~0~0~0.2~205,100"
+  ]
+}
