@@ -1692,14 +1692,6 @@ def _external_package_match_is_compatible(
                 external_pads=external_geometry,
             )
             if translation_ok and transform is not None:
-                rotation_delta = int(transform.rotation_deg) % 360
-                if strict_board_fidelity and rotation_delta:
-                    # For linear screw terminals, a 180deg relaxed transform can
-                    # match pad clouds while flipping connector body orientation.
-                    # In strict board-fidelity mode, prefer local footprint
-                    # generation over forcing external rotation-based remaps.
-                    _clear_component_external_origin_offset(component)
-                    return False, "screw_terminal_origin_requires_rotation"
                 _set_component_external_origin_offset(component, transform)
                 return True, f"relaxed_origin_only:{strict_reason}"
 

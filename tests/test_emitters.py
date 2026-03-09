@@ -471,6 +471,80 @@ def test_generated_library_emits_pad_rotation_and_round_th_for_equal_ellipse(tmp
     assert th_pad.get("shape") == "round"
 
 
+def test_generated_library_preserves_square_and_oval_through_hole_pad_shapes(tmp_path) -> None:
+    symbol = Symbol(
+        symbol_id="SYM_J2",
+        name="J2",
+        pins=[
+            SymbolPin(pin_number="1", pin_name="1", at=Point(-5.08, 2.54)),
+            SymbolPin(pin_number="2", pin_name="2", at=Point(-5.08, 0.0)),
+            SymbolPin(pin_number="3", pin_name="3", at=Point(-5.08, -2.54)),
+        ],
+    )
+    package = Package(
+        package_id="PKG_J2",
+        name="PKG_J2",
+        pads=[
+            Pad(
+                pad_number="1",
+                at=Point(0.0, 2.54),
+                shape="rect",
+                width_mm=1.6,
+                height_mm=1.6,
+                drill_mm=0.8,
+                layer="top_copper",
+                rotation_deg=0.0,
+            ),
+            Pad(
+                pad_number="2",
+                at=Point(0.0, 0.0),
+                shape="rect",
+                width_mm=1.0,
+                height_mm=2.2,
+                drill_mm=0.8,
+                layer="top_copper",
+                rotation_deg=0.0,
+            ),
+            Pad(
+                pad_number="3",
+                at=Point(0.0, -2.54),
+                shape="ellipse",
+                width_mm=2.4,
+                height_mm=1.0,
+                drill_mm=0.8,
+                layer="top_copper",
+                rotation_deg=90.0,
+            ),
+        ],
+    )
+    device = Device(
+        device_id="DEV_J2",
+        name="DEV_J2",
+        symbol_id=symbol.symbol_id,
+        package_id=package.package_id,
+        pin_pad_map={"1": "1", "2": "2", "3": "3"},
+    )
+    part = GeneratedLibraryPart(symbol=symbol, package=package, device=device, source="test")
+    out = emit_generated_library(MatchContext(new_library_parts=[part]), tmp_path)
+    assert out is not None
+
+    tree = ET.parse(out)
+    root = tree.getroot()
+    pad1 = root.find(".//library/packages/package[@name='PKG_J2']/pad[@name='1']")
+    pad2 = root.find(".//library/packages/package[@name='PKG_J2']/pad[@name='2']")
+    pad3 = root.find(".//library/packages/package[@name='PKG_J2']/pad[@name='3']")
+
+    assert pad1 is not None
+    assert pad2 is not None
+    assert pad3 is not None
+
+    assert pad1.get("shape") == "square"
+    assert pad2.get("shape") == "long"
+    assert pad2.get("rot") == "R90"
+    assert pad3.get("shape") == "long"
+    assert pad3.get("rot") == "R90"
+
+
 def test_generated_library_emits_package_silkscreen_and_name_value_layers(tmp_path) -> None:
     symbol = Symbol(
         symbol_id="SYM_J1",

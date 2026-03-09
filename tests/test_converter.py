@@ -1364,7 +1364,7 @@ def test_screw_terminal_matching_collapses_equivalent_best_candidates() -> None:
     assert project.components[0].device_id == "con-lstb:CONN_023.5MM"
 
 
-def test_screw_terminal_external_match_with_board_falls_back_when_only_rotated_origin_relaxation_fits(tmp_path) -> None:
+def test_screw_terminal_external_match_with_board_accepts_rotated_origin_relaxation(tmp_path) -> None:
     external_lbr = tmp_path / "screw_conn.lbr"
     external_lbr.write_text(
         """<?xml version="1.0" encoding="utf-8"?>
@@ -1450,19 +1450,13 @@ def test_screw_terminal_external_match_with_board_falls_back_when_only_rotated_o
     ctx = LibraryMatcher().match(project, entries, match_mode=MatchMode.AUTO)
     component = project.components[0]
 
-    assert ctx.summary.auto_matched == 0
-    assert ctx.summary.created_new_parts == 1
-    assert component.device_id is not None
-    assert component.device_id.startswith("easyeda_generated:")
-    assert "_external_origin_offset_x_mm" not in component.attributes
-    assert "_external_rotation_offset_deg" not in component.attributes
-    mismatch_events = [
-        event
-        for event in project.events
-        if event.code == "EXTERNAL_PACKAGE_GEOMETRY_MISMATCH"
-    ]
-    assert mismatch_events
-    assert mismatch_events[0].context.get("reason") == "screw_terminal_origin_requires_rotation"
+    assert ctx.summary.auto_matched == 1
+    assert ctx.summary.created_new_parts == 0
+    assert component.device_id == "SparkFun-Connectors:CONN_03SCREW"
+    assert "_external_origin_offset_x_mm" in component.attributes
+    assert "_external_origin_offset_y_mm" in component.attributes
+    assert component.attributes.get("_external_rotation_offset_deg") in {180, 0}
+    assert not any(event.code == "EXTERNAL_PACKAGE_GEOMETRY_MISMATCH" for event in project.events)
 
 
 def test_generated_part_dedup_merges_identical_symbol_and_package() -> None:

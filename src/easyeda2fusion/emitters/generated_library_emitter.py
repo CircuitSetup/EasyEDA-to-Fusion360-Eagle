@@ -369,7 +369,10 @@ def _through_hole_pad_attrs(
         "diameter": _fmt_mm(diameter_mm),
     }
 
-    shape_key = shape.lower()
+    shape_key = str(shape or "").strip().lower()
+    width_val = float(width_mm)
+    height_val = float(height_mm)
+    near_square = abs(width_val - height_val) <= 0.02
     rot_total = float(rotation_deg or 0.0)
     if shape_key in {"square", "octagon"}:
         attrs["shape"] = shape_key
@@ -378,13 +381,28 @@ def _through_hole_pad_attrs(
             attrs["rot"] = rot_text
         return attrs
 
-    if shape_key in {"oval", "ellipse"}:
-        if abs(float(height_mm) - float(width_mm)) <= 1e-6:
+    if shape_key in {"rect", "rectangle"}:
+        if near_square:
+            attrs["shape"] = "square"
+            rot_text = _rotation_attr(rot_total)
+            if rot_text is not None:
+                attrs["rot"] = rot_text
+            return attrs
+        attrs["shape"] = "long"
+        if height_val > width_val:
+            rot_total += 90.0
+        rot_text = _rotation_attr(rot_total)
+        if rot_text is not None:
+            attrs["rot"] = rot_text
+        return attrs
+
+    if shape_key in {"oval", "ellipse", "oblong", "long", "roundrect"}:
+        if near_square:
             attrs["shape"] = "round"
             return attrs
 
         attrs["shape"] = "long"
-        if float(height_mm) > float(width_mm):
+        if height_val > width_val:
             rot_total += 90.0
         rot_text = _rotation_attr(rot_total)
         if rot_text is not None:
