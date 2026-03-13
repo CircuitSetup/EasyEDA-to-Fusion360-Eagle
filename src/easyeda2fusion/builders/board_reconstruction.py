@@ -82,7 +82,7 @@ class BoardReconstructionBuilder:
                     lines.append(f"SIGNAL {_quote_token(signal_name)} {' '.join(pairs)};")
 
         if board.outline:
-            lines.extend(_emit_remove_existing_board_outline())
+            lines.extend(_emit_remove_existing_board_outline(board))
 
         for outline in board.outline:
             lines.extend(_emit_region_wires(outline.layer, outline.points, width_mm=0.0, close=True))
@@ -332,16 +332,43 @@ def _emit_keepout_polygon(layer: str, points) -> list[str]:
     ]
 
 
-def _emit_remove_existing_board_outline() -> list[str]:
+def _emit_remove_existing_board_outline(board) -> list[str]:
     # Clear existing board-outline entities on the Dimension layer before
     # reconstructing source outline geometry to avoid duplicate outlines.
+    min_x, min_y, max_x, max_y = _board_outline_clear_bounds(board)
+    delete_x = min_x
+    delete_y = min_y
     return [
         "DISPLAY NONE 20;",
         "LAYER 20;",
-        "GROUP (-100000.0000 -100000.0000) (100000.0000 100000.0000);",
-        "DELETE (> -100000.0000 -100000.0000);",
+        f"GROUP ({min_x:.4f} {min_y:.4f}) ({max_x:.4f} {max_y:.4f});",
+        f"DELETE (> {delete_x:.4f} {delete_y:.4f});",
         "DISPLAY ALL;",
     ]
+
+
+def _board_outline_clear_bounds(board) -> tuple[float, float, float, float]:
+    points = []
+    for region in getattr(board, "outline", []) or []:
+        for point in getattr(region, "points", []) or []:
+            points.append((float(point.x_mm), float(point.y_mm)))
+
+    if not points:
+        return (-100.0, -100.0, 100.0, 100.0)
+
+    xs = [x for x, _ in points]
+    ys = [y for _, y in points]
+    min_x = min(xs)
+    max_x = max(xs)
+    min_y = min(ys)
+    max_y = max(ys)
+    padding = 10.0
+    return (
+        min_x - padding,
+        min_y - padding,
+        max_x + padding,
+        max_y + padding,
+    )
 
 
 def _is_copper_polygon_region(layer: str, net_name: str | None, points) -> bool:
@@ -388,7 +415,9 @@ def _track_wire_width_for_layer(layer_num: str, width_mm: float) -> float:
 
 def _track_layer_command_token(layer_num: str) -> str:
     if str(layer_num) == "16":
-        return "Bottom"
+        return "cb"
+    if str(layer_num) == "1":
+        return "ct"
     return str(layer_num)
 
 
@@ -537,9 +566,9 @@ def _board_text_rotation_deg(
 ) -> int:
     angle = int(round(float(rotation_deg or 0.0))) % 360
     if y_axis_inverted and source_format == SourceFormat.EASYEDA_STD:
-        # Legacy Standard shape-string exports mirror Y coordinates in
-        # normalization; mirror text angle so visual orientation is preserved.
-        angle = (-angle) % 360
+        # Legacy Standard shape-string board text already carries usable screen
+        # orientation after coordinate normalization; preserve authored angle.
+        return angle
     if source_format == SourceFormat.EASYEDA_PRO and layer_num in {"21", "22"}:
         # EasyEDA Pro board STRING rotation is clockwise-positive on silkscreen.
         # EAGLE rotation is counter-clockwise-positive.

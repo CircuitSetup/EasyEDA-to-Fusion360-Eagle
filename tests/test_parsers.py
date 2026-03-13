@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from easyeda2fusion.builders.normalizer import Normalizer
 from easyeda2fusion.model import ParsedDocument, ParsedSource, SourceFormat
 from easyeda2fusion.parsers.easyeda_pro import EasyEDAProParser
@@ -86,6 +88,40 @@ def test_standard_legacy_copperarea_prefers_rich_path_payload(fixtures_dir):
     assert len(copper_regions[0].points) == 5
 
 
+def test_standard_legacy_lib_local_package_frame_is_rotation_consistent(tmp_path):
+    payload = {
+        "head": {"docType": "3", "x": "0", "y": "0"},
+        "shape": [
+            (
+                "LIB~100~100~package`PKG_A`spicePre`R`~0~~gge_a~1~pkg_a~0~~yes~~"
+                "#@$PAD~RECT~98~100~8~8~11~N1~1~2~~0~gge_p1~4~~Y~0~0~0.2~98,100"
+                "#@$PAD~RECT~102~100~8~8~11~N2~2~2~~0~gge_p2~4~~Y~0~0~0.2~102,100"
+            ),
+            (
+                "LIB~200~200~package`PKG_A`spicePre`R`~90~~gge_b~1~pkg_a~0~~yes~~"
+                "#@$PAD~RECT~200~202~8~8~11~N1~1~2~~90~gge_p3~4~~Y~0~0~0.2~200,202"
+                "#@$PAD~RECT~200~198~8~8~11~N2~2~2~~90~gge_p4~4~~Y~0~0~0.2~200,198"
+            ),
+        ],
+    }
+    path = tmp_path / "legacy_pkg_rotation_consistency.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    parsed = parse_easyeda_files([path])
+    board_doc = next(doc for doc in parsed.documents if doc.doc_type == "board")
+    package_objs = [
+        obj
+        for obj in board_doc.raw_objects
+        if obj.get("type") == "package" and obj.get("id") == "PKG_A"
+    ]
+    assert len(package_objs) == 2
+
+    for package_obj in package_objs:
+        pads = {str(pad.get("number")): pad for pad in package_obj.get("pads", [])}
+        assert "1" in pads and "2" in pads
+        assert float(pads["1"]["x"]) < float(pads["2"]["x"])
+
+
 def test_normalizer_mirrors_legacy_package_frame_when_component_pad_fit_requires_it():
     parsed = ParsedSource(
         source_format=SourceFormat.EASYEDA_STD,
@@ -137,6 +173,270 @@ def test_normalizer_mirrors_legacy_package_frame_when_component_pad_fit_requires
     x_coords = sorted(round(float(pad.at.x_mm), 6) for pad in package.pads)
     assert x_coords == [-2.0, -1.0, 1.0]
     assert any(event.code == "LEGACY_PACKAGE_LOCAL_FRAME_MIRRORED" for event in project.events)
+
+
+def test_normalizer_splits_legacy_package_variants_when_instances_require_different_mirrors():
+    parsed = ParsedSource(
+        source_format=SourceFormat.EASYEDA_STD,
+        input_files=[],
+        documents=[
+            ParsedDocument(
+                doc_type="board",
+                name="legacy_board",
+                raw_objects=[
+                    {
+                        "type": "component",
+                        "id": "c1",
+                        "source_instance_id": "c1",
+                        "refdes": "J1",
+                        "package_id": "PKG_CONN",
+                        "x": 10.0,
+                        "y": 10.0,
+                        "rotation": 0.0,
+                        "side": "top",
+                    },
+                    {
+                        "type": "component",
+                        "id": "c2",
+                        "source_instance_id": "c2",
+                        "refdes": "J2",
+                        "package_id": "PKG_CONN",
+                        "x": 20.0,
+                        "y": 20.0,
+                        "rotation": 0.0,
+                        "side": "top",
+                    },
+                    {
+                        "type": "package",
+                        "id": "PKG_CONN",
+                        "name": "PKG_CONN",
+                        "pads": [
+                            {"number": "1", "x": -1.0, "y": 0.0, "width": 1.0, "height": 1.0, "shape": "round"},
+                            {"number": "2", "x": 1.0, "y": 0.0, "width": 1.0, "height": 1.0, "shape": "round"},
+                        ],
+                    },
+                    # J1 aligns with identity package frame.
+                    {"type": "pad", "number": "1", "x": 9.0, "y": 10.0, "width": 1.0, "height": 1.0, "shape": "round"},
+                    {"type": "pad", "number": "2", "x": 11.0, "y": 10.0, "width": 1.0, "height": 1.0, "shape": "round"},
+                    # J2 requires mirrored-X package frame.
+                    {"type": "pad", "number": "1", "x": 21.0, "y": 20.0, "width": 1.0, "height": 1.0, "shape": "round"},
+                    {"type": "pad", "number": "2", "x": 19.0, "y": 20.0, "width": 1.0, "height": 1.0, "shape": "round"},
+                ],
+                metadata={},
+            )
+        ],
+        layers=[],
+        rules=[],
+        metadata={
+            "legacy_shape_string_mode": True,
+            "coordinate_scale_to_mm": 1.0,
+        },
+        events=[],
+    )
+
+    result = Normalizer().normalize(parsed)
+    project = result.project
+    j1 = next(component for component in project.components if component.refdes == "J1")
+    j2 = next(component for component in project.components if component.refdes == "J2")
+    assert j1.package_id == "PKG_CONN"
+    assert j2.package_id != "PKG_CONN"
+    assert j2.package_id.startswith("PKG_CONN:MX")
+    assert any(event.code == "LEGACY_PACKAGE_LOCAL_FRAME_VARIANT_SPLIT" for event in project.events)
+
+
+def test_normalizer_mirrors_legacy_single_instance_package_along_y_when_required():
+    parsed = ParsedSource(
+        source_format=SourceFormat.EASYEDA_STD,
+        input_files=[],
+        documents=[
+            ParsedDocument(
+                doc_type="board",
+                name="legacy_board",
+                raw_objects=[
+                    {
+                        "type": "component",
+                        "id": "c1",
+                        "source_instance_id": "c1",
+                        "refdes": "U1",
+                        "package_id": "PKG_IC",
+                        "x": 50.0,
+                        "y": 50.0,
+                        "rotation": 0.0,
+                        "side": "top",
+                    },
+                    {
+                        "type": "package",
+                        "id": "PKG_IC",
+                        "name": "PKG_IC",
+                        "pads": [
+                            {"number": "1", "x": 0.0, "y": 1.0, "width": 1.0, "height": 1.0, "shape": "round"},
+                            {"number": "2", "x": 0.0, "y": -1.0, "width": 1.0, "height": 1.0, "shape": "round"},
+                        ],
+                    },
+                    # Board pads map to a mirror-Y local frame.
+                    {"type": "pad", "number": "1", "x": 50.0, "y": 49.0, "width": 1.0, "height": 1.0, "shape": "round"},
+                    {"type": "pad", "number": "2", "x": 50.0, "y": 51.0, "width": 1.0, "height": 1.0, "shape": "round"},
+                ],
+                metadata={},
+            )
+        ],
+        layers=[],
+        rules=[],
+        metadata={
+            "legacy_shape_string_mode": True,
+            "coordinate_scale_to_mm": 1.0,
+        },
+        events=[],
+    )
+
+    result = Normalizer().normalize(parsed)
+    project = result.project
+    package = next(pkg for pkg in project.packages if pkg.package_id == "PKG_IC")
+    y_coords = sorted(round(float(pad.at.y_mm), 6) for pad in package.pads)
+    assert y_coords == [-1.0, 1.0]
+    pad1 = next(pad for pad in package.pads if pad.pad_number == "1")
+    assert round(float(pad1.at.y_mm), 6) == -1.0
+    assert any(event.code == "LEGACY_PACKAGE_LOCAL_FRAME_MIRRORED" for event in project.events)
+
+
+def test_normalizer_uses_component_scoped_board_pads_for_legacy_variant_selection():
+    parsed = ParsedSource(
+        source_format=SourceFormat.EASYEDA_STD,
+        input_files=[],
+        documents=[
+            ParsedDocument(
+                doc_type="board",
+                name="legacy_board",
+                raw_objects=[
+                    {
+                        "type": "component",
+                        "id": "c1",
+                        "source_instance_id": "c1",
+                        "refdes": "J1",
+                        "package_id": "PKG_CONN",
+                        "x": 10.0,
+                        "y": 10.0,
+                        "rotation": 0.0,
+                        "side": "top",
+                    },
+                    {
+                        "type": "package",
+                        "id": "PKG_CONN",
+                        "name": "PKG_CONN",
+                        "pads": [
+                            {"number": "1", "x": -1.0, "y": 0.0, "width": 1.0, "height": 1.0, "shape": "round"},
+                            {"number": "2", "x": 1.0, "y": 0.0, "width": 1.0, "height": 1.0, "shape": "round"},
+                        ],
+                    },
+                    # Component-scoped pads for J1 are slightly offset from ideal
+                    # package positions but still reflect the identity local frame.
+                    {
+                        "type": "pad",
+                        "number": "1",
+                        "x": 9.2,
+                        "y": 10.0,
+                        "width": 1.0,
+                        "height": 1.0,
+                        "shape": "round",
+                        "component_refdes": "J1",
+                        "source_instance_id": "c1",
+                    },
+                    {
+                        "type": "pad",
+                        "number": "2",
+                        "x": 10.8,
+                        "y": 10.0,
+                        "width": 1.0,
+                        "height": 1.0,
+                        "shape": "round",
+                        "component_refdes": "J1",
+                        "source_instance_id": "c1",
+                    },
+                    # Nearby unscoped clutter pads can otherwise bias global
+                    # matching toward mirrored-X for this two-pin footprint.
+                    {"type": "pad", "number": "1", "x": 11.0, "y": 10.0, "width": 1.0, "height": 1.0, "shape": "round"},
+                    {"type": "pad", "number": "2", "x": 9.0, "y": 10.0, "width": 1.0, "height": 1.0, "shape": "round"},
+                ],
+                metadata={},
+            )
+        ],
+        layers=[],
+        rules=[],
+        metadata={
+            "legacy_shape_string_mode": True,
+            "coordinate_scale_to_mm": 1.0,
+        },
+        events=[],
+    )
+
+    result = Normalizer().normalize(parsed)
+    project = result.project
+    j1 = next(component for component in project.components if component.refdes == "J1")
+    assert j1.package_id == "PKG_CONN"
+    assert all(event.code != "LEGACY_PACKAGE_LOCAL_FRAME_VARIANT_SPLIT" for event in project.events)
+
+
+def test_normalizer_canonicalizes_two_pin_mixed_variants_to_majority_orientation():
+    parsed = ParsedSource(
+        source_format=SourceFormat.EASYEDA_STD,
+        input_files=[],
+        documents=[
+            ParsedDocument(
+                doc_type="board",
+                name="legacy_board",
+                raw_objects=[
+                    {"type": "component", "id": "c1", "source_instance_id": "c1", "refdes": "J1", "package_id": "PKG_CONN", "x": 10.0, "y": 10.0, "rotation": 0.0, "side": "top"},
+                    {"type": "component", "id": "c2", "source_instance_id": "c2", "refdes": "J2", "package_id": "PKG_CONN", "x": 20.0, "y": 20.0, "rotation": 0.0, "side": "top"},
+                    {"type": "component", "id": "c3", "source_instance_id": "c3", "refdes": "J3", "package_id": "PKG_CONN", "x": 30.0, "y": 30.0, "rotation": 0.0, "side": "top"},
+                    {"type": "component", "id": "c4", "source_instance_id": "c4", "refdes": "J4", "package_id": "PKG_CONN", "x": 40.0, "y": 40.0, "rotation": 0.0, "side": "top"},
+                    {
+                        "type": "package",
+                        "id": "PKG_CONN",
+                        "name": "PKG_CONN",
+                        "pads": [
+                            {"number": "1", "x": -1.0, "y": 0.0, "width": 1.0, "height": 1.0, "shape": "round"},
+                            {"number": "2", "x": 1.0, "y": 0.0, "width": 1.0, "height": 1.0, "shape": "round"},
+                        ],
+                    },
+                    # J1 aligns with identity frame.
+                    {"type": "pad", "number": "1", "x": 9.0, "y": 10.0, "width": 1.0, "height": 1.0, "shape": "round", "component_refdes": "J1", "source_instance_id": "c1"},
+                    {"type": "pad", "number": "2", "x": 11.0, "y": 10.0, "width": 1.0, "height": 1.0, "shape": "round", "component_refdes": "J1", "source_instance_id": "c1"},
+                    # J2/J3/J4 align with mirrored-X frame.
+                    {"type": "pad", "number": "1", "x": 21.0, "y": 20.0, "width": 1.0, "height": 1.0, "shape": "round", "component_refdes": "J2", "source_instance_id": "c2"},
+                    {"type": "pad", "number": "2", "x": 19.0, "y": 20.0, "width": 1.0, "height": 1.0, "shape": "round", "component_refdes": "J2", "source_instance_id": "c2"},
+                    {"type": "pad", "number": "1", "x": 31.0, "y": 30.0, "width": 1.0, "height": 1.0, "shape": "round", "component_refdes": "J3", "source_instance_id": "c3"},
+                    {"type": "pad", "number": "2", "x": 29.0, "y": 30.0, "width": 1.0, "height": 1.0, "shape": "round", "component_refdes": "J3", "source_instance_id": "c3"},
+                    {"type": "pad", "number": "1", "x": 41.0, "y": 40.0, "width": 1.0, "height": 1.0, "shape": "round", "component_refdes": "J4", "source_instance_id": "c4"},
+                    {"type": "pad", "number": "2", "x": 39.0, "y": 40.0, "width": 1.0, "height": 1.0, "shape": "round", "component_refdes": "J4", "source_instance_id": "c4"},
+                ],
+                metadata={},
+            )
+        ],
+        layers=[],
+        rules=[],
+        metadata={
+            "legacy_shape_string_mode": True,
+            "coordinate_scale_to_mm": 1.0,
+        },
+        events=[],
+    )
+
+    result = Normalizer().normalize(parsed)
+    project = result.project
+    j1 = next(component for component in project.components if component.refdes == "J1")
+    j2 = next(component for component in project.components if component.refdes == "J2")
+    j3 = next(component for component in project.components if component.refdes == "J3")
+    j4 = next(component for component in project.components if component.refdes == "J4")
+
+    # Base package is canonicalized to the dominant mirrored orientation, so the
+    # majority instances stay in identity frame and only the minority splits out.
+    assert j2.package_id == "PKG_CONN"
+    assert j3.package_id == "PKG_CONN"
+    assert j4.package_id == "PKG_CONN"
+    assert j1.package_id != "PKG_CONN"
+    assert j1.package_id.startswith("PKG_CONN:MX")
+    assert any(event.code == "LEGACY_PACKAGE_LOCAL_FRAME_MIRRORED" for event in project.events)
+    assert any(event.code == "LEGACY_PACKAGE_LOCAL_FRAME_VARIANT_SPLIT" for event in project.events)
 
 
 def test_standard_legacy_pad_drill_recovers_diameter_from_primary_radius_value():

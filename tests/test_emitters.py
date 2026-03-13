@@ -545,6 +545,47 @@ def test_generated_library_preserves_square_and_oval_through_hole_pad_shapes(tmp
     assert pad3.get("rot") == "R90"
 
 
+def test_generated_library_avoids_long_shape_for_near_square_th_rect(tmp_path) -> None:
+    symbol = Symbol(
+        symbol_id="SYM_JSQ",
+        name="JSQ",
+        pins=[SymbolPin(pin_number="1", pin_name="1", at=Point(-5.08, 0.0))],
+    )
+    package = Package(
+        package_id="PKG_JSQ",
+        name="PKG_JSQ",
+        pads=[
+            Pad(
+                pad_number="1",
+                at=Point(0.0, 0.0),
+                shape="rect",
+                width_mm=1.50,
+                height_mm=1.40,
+                drill_mm=0.85,
+                layer="top_copper",
+                rotation_deg=0.0,
+            ),
+        ],
+    )
+    device = Device(
+        device_id="DEV_JSQ",
+        name="DEV_JSQ",
+        symbol_id=symbol.symbol_id,
+        package_id=package.package_id,
+        pin_pad_map={"1": "1"},
+    )
+    part = GeneratedLibraryPart(symbol=symbol, package=package, device=device, source="test")
+    out = emit_generated_library(MatchContext(new_library_parts=[part]), tmp_path)
+    assert out is not None
+
+    tree = ET.parse(out)
+    root = tree.getroot()
+    pad = root.find(".//library/packages/package[@name='PKG_JSQ']/pad[@name='1']")
+    assert pad is not None
+    assert pad.get("shape") == "square"
+    assert pad.get("rot") is None
+
+
 def test_generated_library_emits_package_silkscreen_and_name_value_layers(tmp_path) -> None:
     symbol = Symbol(
         symbol_id="SYM_J1",
@@ -1092,8 +1133,8 @@ def test_board_builder_maps_numeric_pro_layers() -> None:
         ),
     )
     lines = BoardReconstructionBuilder().build_commands(project)
-    assert "LAYER 1;" in lines
-    assert "LAYER Bottom;" in lines
+    assert "LAYER ct;" in lines
+    assert "LAYER cb;" in lines
 
 
 def test_board_builder_merges_overlapping_track_net_names() -> None:
@@ -1315,8 +1356,8 @@ def test_board_builder_clears_existing_outline_before_rebuild() -> None:
     layer20_indices = [idx for idx, line in enumerate(lines) if line == "LAYER 20;"]
     assert len(layer20_indices) >= 2
     assert clear_idx < layer20_indices[1]
-    assert "GROUP (-100000.0000 -100000.0000) (100000.0000 100000.0000);" in lines
-    assert "DELETE (> -100000.0000 -100000.0000);" in lines
+    assert "GROUP (-10.0000 -10.0000) (20.0000 15.0000);" in lines
+    assert "DELETE (> -10.0000 -10.0000);" in lines
 
 
 def test_board_builder_uses_0_3mm_width_for_silkscreen_region_wires() -> None:
@@ -1441,7 +1482,7 @@ def test_board_builder_keeps_legacy_standard_text_rotation_when_y_axis_inverted(
         ),
     )
     lines = BoardReconstructionBuilder().build_commands(project)
-    assert "TEXT 'TOPTXT' (10.0000 10.0000) R270;" in lines
+    assert "TEXT 'TOPTXT' (10.0000 10.0000) R90;" in lines
 
 
 def test_schematic_builder_filters_invalid_package_pins() -> None:
@@ -1694,7 +1735,7 @@ def test_board_builder_emits_polygon_for_copper_regions() -> None:
         ),
     )
     lines = BoardReconstructionBuilder().build_commands(project)
-    assert "LAYER 1;" in lines
+    assert "LAYER ct;" in lines
     assert any(line.startswith("POLYGON 'GND' 0.2540 ") for line in lines)
 
 
@@ -1781,7 +1822,7 @@ def test_board_builder_emits_bottom_copper_polygon_on_bottom_layer_token() -> No
     )
 
     lines = BoardReconstructionBuilder().build_commands(project)
-    assert "LAYER Bottom;" in lines
+    assert "LAYER cb;" in lines
     assert any(line.startswith("POLYGON 'GND' 0.2540 ") for line in lines)
 
 

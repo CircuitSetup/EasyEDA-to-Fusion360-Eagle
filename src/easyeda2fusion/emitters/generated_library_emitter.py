@@ -358,8 +358,15 @@ def _through_hole_pad_attrs(
 ) -> dict[str, str]:
     # Prefer conservative annular rings for elongated/oval pads. Using the larger copper dimension
     # as round diameter can produce oversized pads in Fusion/EAGLE.
-    minor_mm = max(min(float(width_mm), float(height_mm)), 0.2)
+    width_val = max(float(width_mm), 0.0)
+    height_val = max(float(height_mm), 0.0)
+    major_mm = max(width_val, height_val, 0.2)
+    minor_mm = max(min(width_val, height_val), 0.2)
     diameter_mm = max(minor_mm, float(drill_mm) * 1.6)
+    # EAGLE "long" pads use diameter as the short axis and roughly double it
+    # along the long axis. Clamp to avoid long-pad overlap on near-square PTH.
+    long_diameter_mm = max(major_mm * 0.5, float(drill_mm) * 1.1, 0.2)
+    long_diameter_mm = min(long_diameter_mm, major_mm)
 
     attrs: dict[str, str] = {
         "name": pad_name,
@@ -370,9 +377,8 @@ def _through_hole_pad_attrs(
     }
 
     shape_key = str(shape or "").strip().lower()
-    width_val = float(width_mm)
-    height_val = float(height_mm)
-    near_square = abs(width_val - height_val) <= 0.02
+    aspect_ratio = (major_mm / minor_mm) if minor_mm > 0.0 else 1.0
+    near_square = abs(width_val - height_val) <= 0.15 or aspect_ratio <= 1.2
     rot_total = float(rotation_deg or 0.0)
     if shape_key in {"square", "octagon"}:
         attrs["shape"] = shape_key
@@ -389,6 +395,7 @@ def _through_hole_pad_attrs(
                 attrs["rot"] = rot_text
             return attrs
         attrs["shape"] = "long"
+        attrs["diameter"] = _fmt_mm(long_diameter_mm)
         if height_val > width_val:
             rot_total += 90.0
         rot_text = _rotation_attr(rot_total)
@@ -402,6 +409,7 @@ def _through_hole_pad_attrs(
             return attrs
 
         attrs["shape"] = "long"
+        attrs["diameter"] = _fmt_mm(long_diameter_mm)
         if height_val > width_val:
             rot_total += 90.0
         rot_text = _rotation_attr(rot_total)

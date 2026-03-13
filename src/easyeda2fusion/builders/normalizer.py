@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import logging
 import math
 import re
@@ -362,6 +363,8 @@ class Normalizer:
             layer=str(obj.get("layer", "top_copper")),
             rotation_deg=float(obj.get("rotation", obj.get("rot", 0.0)) or 0.0),
             net=_empty_to_none(obj.get("net") or obj.get("net_name")),
+            component_refdes=_empty_to_none(obj.get("component_refdes") or obj.get("refdes")),
+            source_instance_id=_empty_to_none(obj.get("source_instance_id")),
         )
 
     @staticmethod
@@ -730,6 +733,9 @@ class Normalizer:
             if package.name:
                 package_lookup[package.name] = package
 
+        existing_package_ids = {str(package.package_id) for package in project.packages}
+        existing_package_names = {str(package.name) for package in project.packages if package.name}
+
         components_by_package: dict[str, list[Component]] = {}
         for component in project.components:
             package_id = str(component.package_id or "").strip()
@@ -741,11 +747,28 @@ class Normalizer:
             components_by_package.setdefault(package.package_id, []).append(component)
 
         board_pad_points = [
-            (float(pad.at.x_mm), float(pad.at.y_mm))
+            (
+                str(pad.pad_number or "").strip(),
+                float(pad.at.x_mm),
+                float(pad.at.y_mm),
+            )
             for pad in project.board.pads
         ]
+        board_pad_points_by_component: dict[str, list[tuple[str, float, float]]] = {}
+        for pad in project.board.pads:
+            key = _pad_component_key(pad)
+            if not key:
+                continue
+            board_pad_points_by_component.setdefault(key, []).append(
+                (
+                    str(pad.pad_number or "").strip(),
+                    float(pad.at.x_mm),
+                    float(pad.at.y_mm),
+                )
+            )
         variants = [(False, False), (True, False), (False, True), (True, True)]
         mirror_applied: list[str] = []
+        split_applied: list[str] = []
 
         for package_id, components in components_by_package.items():
             package = package_lookup.get(package_id)
@@ -754,52 +777,138 @@ class Normalizer:
 
             package_span = _package_span_mm(package)
             search_radius_mm = max(8.0, package_span + 2.5)
-            scored: list[tuple[float, bool, bool]] = []
-            for mirror_x, mirror_y in variants:
-                aggregate = 0.0
-                samples = 0
-                for component in components:
-                    world_points = _component_package_world_points(
+            selected_variant_by_component: dict[str, tuple[bool, bool]] = {}
+            for component in components:
+                component_key = _component_instance_key(component)
+                component_board_pad_points = (
+                    board_pad_points_by_component.get(component_key, [])
+                    if component_key
+                    else []
+                )
+                candidate_board_pad_points = (
+                    component_board_pad_points if component_board_pad_points else board_pad_points
+                )
+                variant_scores: list[tuple[float, bool, bool]] = []
+                for mirror_x, mirror_y in variants:
+                    score = _component_package_variant_fit_score(
                         component=component,
                         package=package,
+                        board_pad_points=candidate_board_pad_points,
+                        search_radius_mm=search_radius_mm,
                         mirror_x=mirror_x,
                         mirror_y=mirror_y,
                     )
-                    if not world_points:
-                        continue
-                    local_board = _nearby_points(
-                        board_pad_points,
-                        center_x=float(component.at.x_mm),
-                        center_y=float(component.at.y_mm),
-                        radius_mm=search_radius_mm,
-                    )
-                    targets = local_board if local_board else board_pad_points
-                    aggregate += _nearest_cloud_mean_distance(world_points, targets)
-                    samples += 1
-                if samples:
-                    scored.append((aggregate / float(samples), mirror_x, mirror_y))
+                    variant_scores.append((score, mirror_x, mirror_y))
 
-            if not scored:
-                continue
-            scored.sort(key=lambda item: item[0])
-            best_score, best_mx, best_my = scored[0]
-            identity_score = next(
-                (score for score, mx, my in scored if not mx and not my),
-                None,
-            )
-            if identity_score is None:
-                continue
-            if not (best_mx or best_my):
-                continue
-            if best_score >= 0.35:
-                continue
-            if (identity_score - best_score) < 0.20:
+                if not variant_scores:
+                    continue
+                variant_scores.sort(key=lambda item: item[0])
+                best_score, best_mx, best_my = variant_scores[0]
+                identity_score = next(
+                    (score for score, mx, my in variant_scores if not mx and not my),
+                    None,
+                )
+                chosen: tuple[bool, bool] = (False, False)
+                if identity_score is not None:
+                    if (
+                        (best_mx or best_my)
+                        and best_score < 0.35
+                        and (identity_score - best_score) >= 0.20
+                    ):
+                        chosen = (best_mx, best_my)
+                if component.source_instance_id:
+                    selected_variant_by_component[str(component.source_instance_id)] = chosen
+                else:
+                    selected_variant_by_component[f"{component.refdes}@{component.at.x_mm:.6f},{component.at.y_mm:.6f}"] = chosen
+
+            if not selected_variant_by_component:
                 continue
 
-            _mirror_package_local_frame(package, mirror_x=best_mx, mirror_y=best_my)
-            mirror_applied.append(
-                f"{package.package_id}:{'MX' if best_mx else ''}{'MY' if best_my else ''}"
-            )
+            grouped: dict[tuple[bool, bool], list[Component]] = {}
+            for component in components:
+                key = (
+                    str(component.source_instance_id)
+                    if component.source_instance_id
+                    else f"{component.refdes}@{component.at.x_mm:.6f},{component.at.y_mm:.6f}"
+                )
+                variant = selected_variant_by_component.get(key, (False, False))
+                grouped.setdefault(variant, []).append(component)
+
+            if _package_distinct_pad_count(package) == 2 and (False, False) in grouped:
+                non_identity_groups = [
+                    (variant, grouped_components)
+                    for variant, grouped_components in grouped.items()
+                    if variant != (False, False) and grouped_components
+                ]
+                if len(non_identity_groups) == 1:
+                    dominant_variant, dominant_components = non_identity_groups[0]
+                    identity_components = grouped.get((False, False), [])
+                    if len(dominant_components) > len(identity_components):
+                        # For symmetric two-pin packages, pad-only fitting can
+                        # legitimately choose either of two 180-equivalent local
+                        # frames. Canonicalize package base orientation to the
+                        # dominant instance variant so most placements remain in
+                        # identity frame, then remap variant assignments.
+                        _mirror_package_local_frame(
+                            package,
+                            mirror_x=dominant_variant[0],
+                            mirror_y=dominant_variant[1],
+                        )
+                        remapped: dict[tuple[bool, bool], list[Component]] = {}
+                        for variant, grouped_components in grouped.items():
+                            remapped_variant = (
+                                bool(variant[0]) ^ bool(dominant_variant[0]),
+                                bool(variant[1]) ^ bool(dominant_variant[1]),
+                            )
+                            remapped.setdefault(remapped_variant, []).extend(grouped_components)
+                        grouped = remapped
+                        mirror_applied.append(
+                            f"{package.package_id}:BASE->{_mirror_variant_suffix(dominant_variant[0], dominant_variant[1])}"
+                        )
+
+            non_identity = {
+                variant: comps
+                for variant, comps in grouped.items()
+                if variant != (False, False) and comps
+            }
+            if not non_identity:
+                continue
+
+            # If every instance agrees on a mirrored frame, mutate in place.
+            if len(non_identity) == 1 and (False, False) not in grouped:
+                (best_mx, best_my), _ = next(iter(non_identity.items()))
+                _mirror_package_local_frame(package, mirror_x=best_mx, mirror_y=best_my)
+                mirror_applied.append(
+                    f"{package.package_id}:{_mirror_variant_suffix(best_mx, best_my)}"
+                )
+                continue
+
+            # Mixed per-instance frames: clone mirrored package variants and
+            # rebind only the affected component instances.
+            for (mirror_x, mirror_y), grouped_components in sorted(
+                non_identity.items(),
+                key=lambda item: _mirror_variant_suffix(item[0][0], item[0][1]),
+            ):
+                suffix = _mirror_variant_suffix(mirror_x, mirror_y)
+                variant_package = copy.deepcopy(package)
+                variant_package.package_id = _allocate_package_variant_id(
+                    package.package_id,
+                    suffix,
+                    existing_package_ids,
+                )
+                variant_package.name = _allocate_package_variant_name(
+                    package.name or package.package_id,
+                    suffix,
+                    existing_package_names,
+                )
+                _mirror_package_local_frame(variant_package, mirror_x=mirror_x, mirror_y=mirror_y)
+                project.packages.append(variant_package)
+                package_lookup[variant_package.package_id] = variant_package
+                package_lookup[variant_package.name] = variant_package
+                for component in grouped_components:
+                    component.package_id = variant_package.package_id
+                refs = ",".join(sorted(component.refdes for component in grouped_components))
+                split_applied.append(f"{package.package_id}:{suffix}->{variant_package.package_id} [{refs}]")
 
         if mirror_applied:
             project.events.append(
@@ -813,11 +922,43 @@ class Normalizer:
                     },
                 )
             )
+        if split_applied:
+            project.events.append(
+                project_event(
+                    Severity.INFO,
+                    "LEGACY_PACKAGE_LOCAL_FRAME_VARIANT_SPLIT",
+                    "Split legacy STD package variants by mirrored local frame to preserve per-instance placement fidelity",
+                    {
+                        "count": len(split_applied),
+                        "variants": split_applied,
+                    },
+                )
+            )
 
 
 def _obj_type(obj: dict[str, Any]) -> str:
     typ = obj.get("type") or obj.get("kind") or obj.get("shape") or obj.get("obj")
     return str(typ).strip().lower()
+
+
+def _component_instance_key(component: Component) -> str:
+    source_id = str(component.source_instance_id or "").strip()
+    if source_id:
+        return f"ID:{source_id}"
+    refdes = str(component.refdes or "").strip()
+    if refdes:
+        return f"REF:{refdes}"
+    return ""
+
+
+def _pad_component_key(pad: Pad) -> str:
+    source_id = str(pad.source_instance_id or "").strip()
+    if source_id:
+        return f"ID:{source_id}"
+    refdes = str(pad.component_refdes or "").strip()
+    if refdes:
+        return f"REF:{refdes}"
+    return ""
 
 
 def _package_span_mm(package: Package) -> float:
@@ -830,13 +971,18 @@ def _package_span_mm(package: Package) -> float:
     return max(span_x, span_y)
 
 
+def _package_distinct_pad_count(package: Package) -> int:
+    values = {str(pad.pad_number or "").strip() for pad in package.pads if str(pad.pad_number or "").strip()}
+    return len(values)
+
+
 def _component_package_world_points(
     component: Component,
     package: Package,
     mirror_x: bool,
     mirror_y: bool,
-) -> list[tuple[float, float]]:
-    out: list[tuple[float, float]] = []
+) -> list[tuple[str, float, float]]:
+    out: list[tuple[str, float, float]] = []
     angle = math.radians(float(component.rotation_deg or 0.0))
     cos_a = math.cos(angle)
     sin_a = math.sin(angle)
@@ -854,44 +1000,112 @@ def _component_package_world_points(
             px = -px
         rx = px * cos_a - py * sin_a
         ry = px * sin_a + py * cos_a
-        out.append((cx + rx, cy + ry))
+        out.append((str(pad.pad_number or "").strip(), cx + rx, cy + ry))
     return out
 
 
 def _nearby_points(
-    points: list[tuple[float, float]],
+    points: list[tuple[str, float, float]],
     center_x: float,
     center_y: float,
     radius_mm: float,
-) -> list[tuple[float, float]]:
+) -> list[tuple[str, float, float]]:
     if radius_mm <= 0.0:
         return []
-    out: list[tuple[float, float]] = []
+    out: list[tuple[str, float, float]] = []
     radius_sq = float(radius_mm) * float(radius_mm)
-    for px, py in points:
+    for pad_number, px, py in points:
         dx = float(px) - float(center_x)
         dy = float(py) - float(center_y)
         if dx * dx + dy * dy <= radius_sq:
-            out.append((float(px), float(py)))
+            out.append((str(pad_number or "").strip(), float(px), float(py)))
     return out
 
 
-def _nearest_cloud_mean_distance(
-    source: list[tuple[float, float]],
-    targets: list[tuple[float, float]],
+def _pad_aware_mean_distance(
+    source: list[tuple[str, float, float]],
+    targets: list[tuple[str, float, float]],
 ) -> float:
     if not source:
         return float("inf")
     if not targets:
         return float("inf")
     total = 0.0
-    for sx, sy in source:
-        best = min(
-            math.hypot(float(sx) - float(tx), float(sy) - float(ty))
-            for tx, ty in targets
-        )
+    for source_pad_number, sx, sy in source:
+        same_number_targets = [
+            (tx, ty)
+            for target_pad_number, tx, ty in targets
+            if source_pad_number and target_pad_number == source_pad_number
+        ]
+        active_targets = same_number_targets or [(tx, ty) for _, tx, ty in targets]
+        best = min(math.hypot(float(sx) - float(tx), float(sy) - float(ty)) for tx, ty in active_targets)
         total += best
     return total / float(len(source))
+
+
+def _component_package_variant_fit_score(
+    component: Component,
+    package: Package,
+    board_pad_points: list[tuple[str, float, float]],
+    search_radius_mm: float,
+    mirror_x: bool,
+    mirror_y: bool,
+) -> float:
+    world_points = _component_package_world_points(
+        component=component,
+        package=package,
+        mirror_x=mirror_x,
+        mirror_y=mirror_y,
+    )
+    if not world_points:
+        return float("inf")
+
+    local_board = _nearby_points(
+        board_pad_points,
+        center_x=float(component.at.x_mm),
+        center_y=float(component.at.y_mm),
+        radius_mm=search_radius_mm,
+    )
+    targets = local_board if local_board else board_pad_points
+    return _pad_aware_mean_distance(world_points, targets)
+
+
+def _mirror_variant_suffix(mirror_x: bool, mirror_y: bool) -> str:
+    if mirror_x and mirror_y:
+        return "MXMY"
+    if mirror_x:
+        return "MX"
+    if mirror_y:
+        return "MY"
+    return "ID"
+
+
+def _allocate_package_variant_id(base_id: str, suffix: str, existing_ids: set[str]) -> str:
+    candidate = f"{base_id}:{suffix}"
+    if candidate not in existing_ids:
+        existing_ids.add(candidate)
+        return candidate
+    idx = 2
+    while True:
+        token = f"{candidate}_{idx}"
+        if token not in existing_ids:
+            existing_ids.add(token)
+            return token
+        idx += 1
+
+
+def _allocate_package_variant_name(base_name: str, suffix: str, existing_names: set[str]) -> str:
+    candidate = f"{base_name}:{suffix}"
+    if candidate not in existing_names:
+        existing_names.add(candidate)
+        return candidate
+    idx = 2
+    while True:
+        token = f"{candidate}_{idx}"
+        if token not in existing_names:
+            existing_names.add(token)
+            return token
+        idx += 1
 
 
 def _mirror_angle_deg(angle_deg: float, mirror_x: bool, mirror_y: bool) -> float:

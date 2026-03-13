@@ -484,6 +484,13 @@ class EasyEDAStdParser(EasyEDAParser):
         refdes = _unique_refdes(refdes, used_refdes)
         used_refdes.add(refdes)
 
+        for pad_abs in pad_records_abs:
+            # Preserve source instance linkage so downstream normalization can
+            # score package-frame variants against this exact component instead
+            # of the full-board pad cloud.
+            pad_abs["component_refdes"] = refdes
+            pad_abs["source_instance_id"] = component_id
+
         component_obj: dict[str, Any] = {
             "type": "component",
             "id": component_id,
@@ -864,7 +871,11 @@ def _localize_point(
 ) -> tuple[float, float]:
     dx = float(x) - float(origin_x)
     dy = float(y) - float(origin_y)
-    return _rotate_xy(dx, dy, -rotation_deg)
+    # Legacy Standard shape-string coordinates are authored in a Y-down frame.
+    # We later normalize board coordinates with Y inversion. To recover a stable
+    # package-local frame from LIB records across component rotations, local
+    # point localization must use +rotation here (not -rotation).
+    return _rotate_xy(dx, dy, rotation_deg)
 
 
 def _pad_to_package_local(
@@ -877,7 +888,7 @@ def _pad_to_package_local(
     py = _safe_float(pad.get("y"), 0.0)
     dx = px - origin_x
     dy = py - origin_y
-    local_x, local_y = _rotate_xy(dx, dy, -rotation_deg)
+    local_x, local_y = _rotate_xy(dx, dy, rotation_deg)
 
     local = dict(pad)
     local["x"] = round(local_x, 6)

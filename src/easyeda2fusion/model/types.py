@@ -116,6 +116,8 @@ class Pad:
     layer: str = "top_copper"
     rotation_deg: float = 0.0
     net: str | None = None
+    component_refdes: str | None = None
+    source_instance_id: str | None = None
 
 
 @dataclass
