@@ -191,6 +191,8 @@ def build_net_attachment_plan(
                     path_mode = "unroutable"
 
         power_key = normalize_power_net_name(net_name)
+        path_endpoint_refs = _path_endpoint_refdes_index(mapped_nodes, point_key)
+        labeled_component_keys: set[tuple[str, str]] = set()
         path_items: list[NetAttachmentPath] = []
         for path in net_paths:
             if len(path) < 2:
@@ -202,6 +204,13 @@ def build_net_attachment_plan(
             if draw_as_stub_labels or fallback_to_stub_labels or power_key:
                 label_spec = label_spec_for_path(path)
                 if label_spec is not None:
+                    endpoint_refs = _path_endpoint_refs(path, path_endpoint_refs, point_key)
+                    if endpoint_refs:
+                        chosen_ref = sorted(endpoint_refs)[0]
+                        label_component_key = (_normalize_net_name(net_name), chosen_ref)
+                        if label_component_key in labeled_component_keys:
+                            continue
+                        labeled_component_keys.add(label_component_key)
                     pending_label_stubs.append((net_name, *label_spec))
 
         if path_items:
@@ -241,3 +250,30 @@ def _pin_sort_key(pin_id: str) -> tuple[int, str]:
     if token.isdigit():
         return (0, f"{int(token):09d}")
     return (1, token.upper())
+
+
+def _path_endpoint_refdes_index(
+    mapped_nodes: list[MappedNode],
+    point_key: Callable[[Point], tuple[float, float]],
+) -> dict[tuple[float, float], set[str]]:
+    out: dict[tuple[float, float], set[str]] = {}
+    for refdes, _pin, x_mm, y_mm in mapped_nodes:
+        key = point_key((x_mm, y_mm))
+        refs = out.setdefault(key, set())
+        refs.add(refdes)
+    return out
+
+
+def _path_endpoint_refs(
+    path: list[Point],
+    endpoint_ref_index: dict[tuple[float, float], set[str]],
+    point_key: Callable[[Point], tuple[float, float]],
+) -> set[str]:
+    if len(path) < 2:
+        return set()
+    refs: set[str] = set()
+    start_key = point_key(path[0])
+    end_key = point_key(path[-1])
+    refs.update(endpoint_ref_index.get(start_key, set()))
+    refs.update(endpoint_ref_index.get(end_key, set()))
+    return refs

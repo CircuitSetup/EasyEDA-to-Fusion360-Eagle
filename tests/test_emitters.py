@@ -2370,6 +2370,74 @@ def test_schematic_builder_emits_power_net_labels() -> None:
     assert any(line.startswith("LABEL (") for line in lines)
 
 
+def test_schematic_builder_limits_power_labels_to_one_per_component_on_same_net() -> None:
+    project = Project(
+        project_id="p_power_label_per_component",
+        name="p_power_label_per_component",
+        source_format=SourceFormat.EASYEDA_STD,
+        input_files=[],
+        symbols=[
+            Symbol(
+                symbol_id="SYM_TWO_PIN",
+                name="SYM_TWO_PIN",
+                pins=[
+                    SymbolPin(pin_number="1", pin_name="1", at=Point(-2.54, 1.27)),
+                    SymbolPin(pin_number="2", pin_name="2", at=Point(-2.54, -1.27)),
+                ],
+            )
+        ],
+        components=[
+            Component(
+                refdes="U1",
+                value="",
+                source_name="U",
+                symbol_id="SYM_TWO_PIN",
+                device_id="easyeda_generated:DEV_U1",
+                package_id="PKG",
+                at=Point(0.0, 0.0),
+            ),
+            Component(
+                refdes="U2",
+                value="",
+                source_name="U",
+                symbol_id="SYM_TWO_PIN",
+                device_id="easyeda_generated:DEV_U2",
+                package_id="PKG",
+                at=Point(20.0, 0.0),
+            ),
+        ],
+        packages=[
+            Package(
+                package_id="PKG",
+                name="PKG",
+                pads=[
+                    Pad(pad_number="1", at=Point(-2.54, 1.27), shape="rect", width_mm=1.0, height_mm=1.0),
+                    Pad(pad_number="2", at=Point(-2.54, -1.27), shape="rect", width_mm=1.0, height_mm=1.0),
+                ],
+            )
+        ],
+        nets=[
+            Net(
+                name="3V3",
+                nodes=[
+                    NetNode(refdes="U1", pin="1"),
+                    NetNode(refdes="U1", pin="2"),
+                    NetNode(refdes="U2", pin="1"),
+                ],
+            )
+        ],
+    )
+
+    lines = SchematicReconstructionBuilder().build_commands(project)
+    net_lines = [line for line in lines if line.startswith("NET '3V3'")]
+    label_lines = [line for line in lines if line.startswith("LABEL (")]
+
+    # Keep per-pin stubs for electrical connectivity.
+    assert len(net_lines) == 3
+    # Do not emit repeated same-net labels for multiple pins on one component.
+    assert len(label_lines) == 2
+
+
 def test_schematic_builder_avoids_duplicate_power_labels_for_fallback_stub_paths() -> None:
     project = Project(
         project_id="p_power_fallback_dedupe",

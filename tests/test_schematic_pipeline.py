@@ -344,6 +344,80 @@ def test_net_attachment_plan_falls_back_to_stub_labels_when_routing_fails() -> N
     assert plan.connected_pin_keys == {("U1", "1"), ("U2", "1")}
 
 
+def test_net_attachment_plan_limits_stub_labels_to_one_per_component_for_same_net() -> None:
+    connection_map = [
+        _Connection(
+            net_name="3V3",
+            nodes=(
+                _Node("U1", "1", _Anchor(10.0, 10.0, -1.0, 0.0)),
+                _Node("U1", "2", _Anchor(10.0, 12.54, -1.0, 0.0)),
+                _Node("U2", "1", _Anchor(20.0, 10.0, 1.0, 0.0)),
+            ),
+        )
+    ]
+
+    def _should_draw(_name, _nodes):
+        return True
+
+    def _should_stub(_name, _nodes, _placement):
+        return True
+
+    def _build_stub(_net_name, nodes, _anchors, _placement, stub_len, _occupied, _forbidden):
+        out: list[list[tuple[float, float]]] = []
+        for _ref, _pin, x_mm, y_mm in nodes:
+            out.append([(x_mm, y_mm), (x_mm + stub_len, y_mm)])
+        return out
+
+    def _route(_name, _nodes, _occupied, _placement, _forbidden, _allow_dense):
+        return []
+
+    def _legacy(_name, _nodes, _occupied, _placement, _forbidden):
+        return []
+
+    def _norm_power(name):
+        return "3V3" if name == "3V3" else None
+
+    def _append(occupied, name, path):
+        for idx in range(len(path) - 1):
+            occupied.append((name, path[idx], path[idx + 1]))
+
+    def _point_key(point):
+        return (round(point[0], 6), round(point[1], 6))
+
+    def _label_spec(path):
+        end = path[-1]
+        return (end[0], end[1], end[0], end[1])
+
+    def _snap(path):
+        return path
+
+    plan = build_net_attachment_plan(
+        connection_map=connection_map,
+        placement_map={"U1": (10.0, 11.27), "U2": (20.0, 10.0)},
+        all_anchor_points={(10.0, 10.0), (10.0, 12.54), (20.0, 10.0)},
+        resolved_anchor_by_ref_pin={},
+        should_draw_net=_should_draw,
+        should_draw_net_with_stub_labels=_should_stub,
+        build_stub_label_paths_for_net=_build_stub,
+        route_net_paths=_route,
+        legacy_chain_paths_for_net=_legacy,
+        normalize_power_net_name=_norm_power,
+        append_occupied_segments=_append,
+        point_key=_point_key,
+        label_spec_for_path=_label_spec,
+        stub_length_mm=1.27,
+        snap_to_default_grid=False,
+        snap_path_to_grid=_snap,
+    )
+
+    assert len(plan.plans) == 1
+    net_plan = plan.plans[0]
+    assert net_plan.strategy == "stub_labels"
+    assert len(net_plan.paths) == 3
+    # U1 has two same-net pins; only one label stub should be retained for U1.
+    assert len(plan.pending_label_stubs) == 2
+
+
 def test_net_attachment_plan_does_not_mark_connections_when_no_paths_emit() -> None:
     connection_map = [
         _Connection(
