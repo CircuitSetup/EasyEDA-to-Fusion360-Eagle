@@ -2436,6 +2436,9 @@ def test_schematic_builder_limits_power_labels_to_one_per_component_on_same_net(
     assert len(net_lines) == 3
     # Do not emit repeated same-net labels for multiple pins on one component.
     assert len(label_lines) == 2
+    pending = project.metadata.get("schematic_net_attachment_plan", {}).get("pending_label_stubs", [])
+    owners = {item.get("owner_refdes") for item in pending if isinstance(item, dict)}
+    assert owners == {"U1", "U2"}
 
 
 def test_schematic_builder_avoids_duplicate_power_labels_for_fallback_stub_paths() -> None:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import html
 import os
 import re
 import xml.etree.ElementTree as ET
@@ -9,6 +8,7 @@ from typing import Any
 
 from easyeda2fusion.matchers.library_matcher import LibraryEntry
 from easyeda2fusion.utils.io import load_json
+from easyeda2fusion.utils.xml import parse_xml_root_with_entity_sanitization
 
 
 DEFAULT_GENERIC_LIBRARY: list[LibraryEntry] = [
@@ -58,6 +58,9 @@ DEFAULT_GENERIC_LIBRARY: list[LibraryEntry] = [
     ),
 ]
 
+_LOAD_LIBRARY_CACHE: dict[tuple[Any, ...], tuple[LibraryEntry, ...]] = {}
+_FILE_ENTRY_CACHE: dict[tuple[str, int, int], tuple[LibraryEntry, ...]] = {}
+
 
 def load_library_entries(
     path: Path | None,
@@ -66,23 +69,31 @@ def load_library_entries(
     capacitor_library_path: Path | None = None,
     use_default_fusion_libraries: bool = True,
 ) -> list[LibraryEntry]:
-    entries: list[LibraryEntry] = list(DEFAULT_GENERIC_LIBRARY)
-
+    request_paths: list[Path] = []
     if use_default_fusion_libraries:
         for auto_dir in _default_fusion_library_dirs():
             if auto_dir.exists():
-                entries.extend(_entries_from_lbr_dir(auto_dir))
-
+                request_paths.append(auto_dir)
     if resistor_library_path is not None:
-        entries.extend(_entries_from_path(resistor_library_path))
+        request_paths.append(Path(resistor_library_path).expanduser())
     if capacitor_library_path is not None:
-        entries.extend(_entries_from_path(capacitor_library_path))
-    if path is None:
-        return _dedupe_entries(entries)
+        request_paths.append(Path(capacitor_library_path).expanduser())
+    if path is not None:
+        request_paths.append(Path(path).expanduser())
 
-    entries.extend(_entries_from_path(path))
+    cache_key = tuple(_path_signature(candidate) for candidate in request_paths)
+    cached = _LOAD_LIBRARY_CACHE.get(cache_key)
+    if cached is not None:
+        return list(cached)
 
-    return _dedupe_entries(entries)
+    entries: list[LibraryEntry] = list(DEFAULT_GENERIC_LIBRARY)
+
+    for request_path in request_paths:
+        entries.extend(_entries_from_path(request_path))
+
+    deduped = tuple(_dedupe_entries(entries))
+    _LOAD_LIBRARY_CACHE[cache_key] = deduped
+    return list(deduped)
 
 
 def _entries_from_path(path: Path) -> list[LibraryEntry]:
@@ -100,13 +111,19 @@ def _entries_from_path(path: Path) -> list[LibraryEntry]:
         return entries
 
     if candidate.is_dir():
-        entries.extend(_entries_from_lbr_dir(candidate))
+        for item in sorted(candidate.rglob("*.lbr")):
+            entries.extend(_entries_from_lbr_file(item))
         for item in sorted(candidate.rglob("*.json")):
             entries.extend(_entries_from_file(item))
     return entries
 
 
 def _entries_from_file(path: Path) -> list[LibraryEntry]:
+    signature = _file_signature(path)
+    cached = _FILE_ENTRY_CACHE.get(signature)
+    if cached is not None:
+        return list(cached)
+
     try:
         payload = load_json(path)
     except Exception:
@@ -135,7 +152,9 @@ def _entries_from_file(path: Path) -> list[LibraryEntry]:
                 library_path=str(row["library_path"]) if row.get("library_path") else None,
             )
         )
-    return [entry for entry in entries if entry.device_name and entry.package_name]
+    filtered = tuple(entry for entry in entries if entry.device_name and entry.package_name)
+    _FILE_ENTRY_CACHE[signature] = filtered
+    return list(filtered)
 
 
 def _entries_from_lbr_dir(path: Path) -> list[LibraryEntry]:
@@ -146,6 +165,11 @@ def _entries_from_lbr_dir(path: Path) -> list[LibraryEntry]:
 
 
 def _entries_from_lbr_file(path: Path) -> list[LibraryEntry]:
+    signature = _file_signature(path)
+    cached = _FILE_ENTRY_CACHE.get(signature)
+    if cached is not None:
+        return list(cached)
+
     entries: list[LibraryEntry] = []
     lib_name = path.stem
 
@@ -182,7 +206,9 @@ def _entries_from_lbr_file(path: Path) -> list[LibraryEntry]:
                 )
             )
 
-    return entries
+    cached_entries = tuple(entries)
+    _FILE_ENTRY_CACHE[signature] = cached_entries
+    return list(cached_entries)
 
 
 def _default_fusion_library_dirs() -> list[Path]:
@@ -203,38 +229,36 @@ def _default_fusion_library_dirs() -> list[Path]:
     ]
 
 
+def _path_signature(path: Path) -> tuple[Any, ...]:
+    candidate = Path(path).expanduser()
+    if not candidate.exists():
+        return ("missing", str(candidate))
+    resolved = candidate.resolve()
+    if resolved.is_file():
+        return ("file", *_file_signature(resolved))
+    child_signatures = tuple(
+        _file_signature(item)
+        for item in sorted(resolved.rglob("*.lbr"))
+    ) + tuple(
+        _file_signature(item)
+        for item in sorted(resolved.rglob("*.json"))
+    )
+    return ("dir", str(resolved), child_signatures)
+
+
+def _file_signature(path: Path) -> tuple[str, int, int]:
+    resolved = Path(path).expanduser().resolve()
+    stat = resolved.stat()
+    return (str(resolved), int(stat.st_mtime_ns), int(stat.st_size))
+
+
 def _parse_lbr_root(path: Path) -> ET.Element | None:
-    try:
-        return ET.parse(path).getroot()
-    except Exception:
-        pass
-
-    try:
-        raw = path.read_text(encoding="utf-8", errors="ignore")
-    except Exception:
-        return None
-
-    sanitized = _sanitize_xml_named_entities(raw)
-    try:
-        return ET.fromstring(sanitized)
-    except Exception:
-        return None
+    return parse_xml_root_with_entity_sanitization(path)
 
 
-def _sanitize_xml_named_entities(text: str) -> str:
-    xml_builtins = {"amp", "lt", "gt", "apos", "quot"}
-    pattern = re.compile(r"&([A-Za-z][A-Za-z0-9]+);")
-
-    def _replace(match: re.Match[str]) -> str:
-        name = str(match.group(1) or "")
-        if name in xml_builtins:
-            return match.group(0)
-        decoded = html.unescape(match.group(0))
-        if decoded == match.group(0):
-            return ""
-        return decoded
-
-    return pattern.sub(_replace, text)
+def _clear_library_loader_caches() -> None:
+    _LOAD_LIBRARY_CACHE.clear()
+    _FILE_ENTRY_CACHE.clear()
 
 
 def _infer_component_class(text: str) -> str | None:

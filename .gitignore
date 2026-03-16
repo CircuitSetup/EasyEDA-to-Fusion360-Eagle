@@ -7,6 +7,7 @@
 /src/easyeda2fusion/reports/__pycache__
 /src/easyeda2fusion/ui/__pycache__
 /src/easyeda2fusion/utils/__pycache__
+/src/*.egg-info/
 /tests/__pycache__
 /_tmp_crosscheck
 /plans

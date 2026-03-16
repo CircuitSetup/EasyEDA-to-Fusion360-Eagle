@@ -1,23 +1,28 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
-from easyeda2fusion.matchers.library_loader import load_library_entries
+from easyeda2fusion.matchers import library_loader
+from easyeda2fusion.matchers.library_loader import _clear_library_loader_caches, load_library_entries
 
 
 def test_load_lbr_library_entries(fixtures_dir):
-    entries = load_library_entries(fixtures_dir / "simple_fusion.lbr")
+    _clear_library_loader_caches()
+    entries = load_library_entries(fixtures_dir / "simple_fusion.lbr", use_default_fusion_libraries=False)
     assert any(entry.add_token == "simple_fusion:R0603" for entry in entries)
     assert any(entry.package_name == "R0603" for entry in entries)
 
 
 def test_load_lbr_mpn_entries(fixtures_dir):
-    entries = load_library_entries(fixtures_dir / "simple_mpn_fusion.lbr")
+    _clear_library_loader_caches()
+    entries = load_library_entries(fixtures_dir / "simple_mpn_fusion.lbr", use_default_fusion_libraries=False)
     assert any((entry.mpn or "").upper() == "STM32F030K6T6" for entry in entries)
     assert any("STM32F030K6T6" in [alias.upper() for alias in entry.aliases] for entry in entries)
 
 
 def test_auto_scan_includes_fusion_electron_library_dir(tmp_path, monkeypatch):
+    _clear_library_loader_caches()
     user = tmp_path / "User"
     appdata = tmp_path / "AppData"
     localapp = tmp_path / "LocalAppData"
@@ -37,6 +42,7 @@ def test_auto_scan_includes_fusion_electron_library_dir(tmp_path, monkeypatch):
 
 
 def test_load_library_entries_accepts_passive_override_paths(fixtures_dir, tmp_path):
+    _clear_library_loader_caches()
     fixture = fixtures_dir / "simple_fusion.lbr"
     resistor_lib = tmp_path / "resistors.lbr"
     capacitor_lib = tmp_path / "capacitors.lbr"
@@ -47,6 +53,7 @@ def test_load_library_entries_accepts_passive_override_paths(fixtures_dir, tmp_p
         None,
         resistor_library_path=resistor_lib,
         capacitor_library_path=capacitor_lib,
+        use_default_fusion_libraries=False,
     )
 
     paths = {str(item.library_path or "") for item in entries if item.library_path}
@@ -55,6 +62,7 @@ def test_load_library_entries_accepts_passive_override_paths(fixtures_dir, tmp_p
 
 
 def test_auto_scan_includes_default_dirs_even_with_explicit_library_path(tmp_path, monkeypatch):
+    _clear_library_loader_caches()
     user = tmp_path / "User"
     appdata = tmp_path / "AppData"
     localapp = tmp_path / "LocalAppData"
@@ -80,6 +88,7 @@ def test_auto_scan_includes_default_dirs_even_with_explicit_library_path(tmp_pat
 
 
 def test_auto_scan_can_be_disabled(tmp_path, monkeypatch):
+    _clear_library_loader_caches()
     user = tmp_path / "User"
     appdata = tmp_path / "AppData"
     localapp = tmp_path / "LocalAppData"
@@ -98,3 +107,47 @@ def test_auto_scan_can_be_disabled(tmp_path, monkeypatch):
 
     entries = load_library_entries(None, use_default_fusion_libraries=False)
     assert not any((item.library_path or "").endswith("default_scan.lbr") for item in entries)
+
+
+def test_load_library_entries_reuses_cached_lbr_parse(fixtures_dir, monkeypatch):
+    _clear_library_loader_caches()
+    fixture = fixtures_dir / "simple_fusion.lbr"
+    calls = {"count": 0}
+    original = library_loader._parse_lbr_root
+
+    def _wrapped(path):
+        calls["count"] += 1
+        return original(path)
+
+    monkeypatch.setattr(library_loader, "_parse_lbr_root", _wrapped)
+
+    first = load_library_entries(fixture, use_default_fusion_libraries=False)
+    second = load_library_entries(fixture, use_default_fusion_libraries=False)
+
+    assert calls["count"] == 1
+    assert [item.add_token for item in first] == [item.add_token for item in second]
+
+
+def test_load_library_entries_cache_invalidates_when_library_changes(fixtures_dir, tmp_path, monkeypatch):
+    _clear_library_loader_caches()
+    source_a = fixtures_dir / "simple_fusion.lbr"
+    source_b = fixtures_dir / "simple_mpn_fusion.lbr"
+    library_path = tmp_path / "switchable.lbr"
+    library_path.write_text(source_a.read_text(encoding="utf-8"), encoding="utf-8")
+    calls = {"count": 0}
+    original = library_loader._parse_lbr_root
+
+    def _wrapped(path):
+        calls["count"] += 1
+        return original(path)
+
+    monkeypatch.setattr(library_loader, "_parse_lbr_root", _wrapped)
+
+    first = load_library_entries(library_path, use_default_fusion_libraries=False)
+    library_path.write_text(source_b.read_text(encoding="utf-8"), encoding="utf-8")
+    os.utime(library_path, None)
+    second = load_library_entries(library_path, use_default_fusion_libraries=False)
+
+    assert calls["count"] == 2
+    assert not any((item.mpn or "").upper() == "STM32F030K6T6" for item in first)
+    assert any((item.mpn or "").upper() == "STM32F030K6T6" for item in second)

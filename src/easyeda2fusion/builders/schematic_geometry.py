@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from easyeda2fusion.builders.component_identity import resolve_component_refdes as _shared_resolve_component_refdes
 from easyeda2fusion.model import Component, Project, Side, Symbol
 
 
@@ -408,8 +409,7 @@ def _default_outward_direction(local_x_mm: float, local_y_mm: float) -> tuple[fl
 
 
 def _resolve_component_refdes(component: Component, refdes_map: dict[str, str]) -> str:
-    key = str(component.refdes or "")
-    return refdes_map.get(key, key)
+    return _shared_resolve_component_refdes(component, refdes_map)
 
 
 def _component_instance_id(component: Component) -> str:
@@ -424,4 +424,3 @@ def _pin_sort_key(pin_id: str) -> tuple[int, str]:
     if token.isdigit():
         return (0, f"{int(token):09d}")
     return (1, token.upper())
-

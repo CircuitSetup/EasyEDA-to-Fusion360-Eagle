@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-import html
 import math
 import re
 import bisect
@@ -10,20 +9,29 @@ from collections import defaultdict
 from typing import Any, Iterable
 import xml.etree.ElementTree as ET
 
-from easyeda2fusion.model import Net, NetNode, Project, Severity, SourceFormat, project_event
-from easyeda2fusion.builders.board_reconstruction import (
-    _canonicalize_two_pin_quarter_turn,
-    _component_is_resistor,
-    _is_adjustable_resistor_package,
-    _package_pin_count,
-    _project_track_net_aliases,
-    _resolve_component_package as _resolve_component_package_for_rotation,
+from easyeda2fusion.builders.component_identity import (
+    build_refdes_map as _shared_build_refdes_map,
+    component_instance_key as _shared_component_instance_key,
+    resolve_component_refdes as _shared_resolve_component_refdes,
+    sanitize_refdes as _shared_sanitize_refdes,
 )
+from easyeda2fusion.builders.net_aliases import project_track_net_aliases as _project_track_net_aliases
+from easyeda2fusion.builders.package_utils import (
+    canonicalize_two_pin_quarter_turn as _canonicalize_two_pin_quarter_turn,
+    component_is_resistor as _component_is_resistor,
+    is_adjustable_resistor_package as _is_adjustable_resistor_package,
+    package_lookup as _shared_package_lookup,
+    package_pin_count as _package_pin_count,
+    resolve_component_package as _resolve_component_package_for_rotation,
+    valid_pins_by_ref as _shared_valid_pins_by_ref,
+)
+from easyeda2fusion.model import Net, NetNode, Project, Severity, SourceFormat, project_event
 from easyeda2fusion.builders.schematic_connectivity import build_board_derived_net_connection_map
 from easyeda2fusion.builders.schematic_geometry import build_schematic_geometry_maps
-from easyeda2fusion.builders.schematic_netplan import build_net_attachment_plan
+from easyeda2fusion.builders.schematic_netplan import PlannedNetPath, build_net_attachment_plan
 from easyeda2fusion.builders.schematic_placement import build_board_derived_placement_map
 from easyeda2fusion.emitters.schematic_draw import emit_net_attachment_lines
+from easyeda2fusion.utils.xml import parse_xml_root_with_entity_sanitization
 
 _SCHEMATIC_DEFAULT_GRID_MM = 1.27
 _MM_PER_INCH = 25.4
@@ -219,7 +227,8 @@ class SchematicReconstructionBuilder:
 
         placement_commands_by_ref: dict[str, str] = {}
         orientation_records_by_ref: dict[str, dict[str, Any]] = {}
-        for component in project.components:
+        placed_instance_records: list[dict[str, str]] = []
+        for ordinal, component in enumerate(project.components, start=1):
             if component.device_id:
                 safe_refdes = _resolve_component_refdes(component, refdes_map)
                 placed_refs.add(safe_refdes)
@@ -254,6 +263,14 @@ class SchematicReconstructionBuilder:
                     ),
                     "schematic_origin_mm": {"x": float(at_x), "y": float(at_y)},
                 }
+                placed_instance_records.append(
+                    {
+                        "source_refdes": str(component.refdes or ""),
+                        "source_instance_id": str(getattr(component, "source_instance_id", "") or ""),
+                        "source_component_key": _component_refdes_key(component, ordinal),
+                        "emitted_refdes": safe_refdes,
+                    }
+                )
                 value_text = _component_value_for_schematic(component)
                 if value_text:
                     lines.append(
@@ -261,6 +278,7 @@ class SchematicReconstructionBuilder:
                     )
         project.metadata["schematic_instance_placement_commands"] = placement_commands_by_ref
         project.metadata["schematic_instance_orientation_records"] = orientation_records_by_ref
+        project.metadata["schematic_instance_refdes_map"] = placed_instance_records
 
         inserted_supply_symbols: list[dict[str, str]] = []
         supply_supported = False
@@ -310,7 +328,7 @@ class SchematicReconstructionBuilder:
             )
         )
         occupied_segments = net_plan.occupied_segments
-        pending_label_stubs: list[tuple[str, float, float, float, float]] = list(net_plan.pending_label_stubs)
+        pending_label_stubs = list(net_plan.pending_label_stubs)
         connected_component_refs = net_plan.connected_component_refs
         connected_pin_keys = net_plan.connected_pin_keys
 
@@ -336,7 +354,18 @@ class SchematicReconstructionBuilder:
             label_size = _coord_for_schematic_output(1.27, use_inch_output)
             lines.append(f"CHANGE SIZE {label_size:.4f};")
             seen_points: set[tuple[float, float, float, float]] = set()
-            adjusted_labels = _dedupe_label_specs(pending_label_stubs)
+            adjusted_labels = _dedupe_label_specs(
+                [
+                    (
+                        item.net_name,
+                        item.pick_x_mm,
+                        item.pick_y_mm,
+                        item.label_x_mm,
+                        item.label_y_mm,
+                    )
+                    for item in pending_label_stubs
+                ]
+            )
             emitted_labels: list[tuple[str, float, float, float, float]] = []
             for _net_name, pick_x, pick_y, label_x, label_y in adjusted_labels:
                 if not _point_touches_any_segment((pick_x, pick_y), occupied_segments):
@@ -433,20 +462,7 @@ class SchematicReconstructionBuilder:
 
 
 def _build_refdes_map(project: Project) -> dict[str, str]:
-    mapping: dict[str, str] = {}
-    used: set[str] = set()
-    for ordinal, component in enumerate(project.components, start=1):
-        original = component.refdes
-        base = _sanitize_refdes(original)
-        candidate = base
-        suffix_idx = 2
-        while candidate in used:
-            candidate = f"{base}_{suffix_idx}"
-            suffix_idx += 1
-        mapping.setdefault(original, candidate)
-        mapping[_component_refdes_key(component, ordinal)] = candidate
-        used.add(candidate)
-    return mapping
+    return _shared_build_refdes_map(project)
 
 
 def _coalesced_nets(
@@ -538,14 +554,7 @@ def _preferred_merged_net_name(names: set[str]) -> str:
 
 
 def _sanitize_refdes(value: str) -> str:
-    text = str(value or "").strip()
-    text = re.sub(r"[^A-Za-z0-9_]+", "_", text)
-    text = re.sub(r"_+", "_", text).strip("_")
-    if not text:
-        return "U_AUTO"
-    if not text[0].isalpha():
-        text = f"U_{text}"
-    return text
+    return _shared_sanitize_refdes(value)
 
 
 def _add_part_name_token(value: str) -> str:
@@ -557,19 +566,11 @@ def _add_part_name_token(value: str) -> str:
 
 
 def _component_refdes_key(component, ordinal: int) -> str:
-    source_id = str(getattr(component, "source_instance_id", "") or "").strip()
-    if source_id:
-        return f"{component.refdes}::{source_id}"
-    return f"{component.refdes}::IDX{ordinal}"
+    return _shared_component_instance_key(component, ordinal)
 
 
 def _resolve_component_refdes(component, refdes_map: dict[str, str]) -> str:
-    source_id = str(getattr(component, "source_instance_id", "") or "").strip()
-    if source_id:
-        keyed = refdes_map.get(f"{component.refdes}::{source_id}")
-        if keyed:
-            return keyed
-    return refdes_map.get(component.refdes, _sanitize_refdes(component.refdes))
+    return _shared_resolve_component_refdes(component, refdes_map)
 
 
 def _quote_token(value: str) -> str:
@@ -2052,34 +2053,11 @@ def _board_like_positions(project_components, refdes_map: dict[str, str]) -> dic
 
 
 def _valid_pins_by_ref(project: Project) -> dict[str, set[str]]:
-    package_lookup: dict[str, set[str]] = {}
-    for package in project.packages:
-        pins = {
-            str(pad.pad_number).strip()
-            for pad in package.pads
-            if str(pad.pad_number).strip()
-        }
-        package_lookup[package.package_id] = pins
-        package_lookup[package.name] = pins
-
-    valid: dict[str, set[str]] = {}
-    for component in project.components:
-        ref = _sanitize_refdes(component.refdes)
-        package_id = str(component.package_id or "").strip()
-        if not package_id:
-            valid[ref] = set()
-            continue
-        valid[ref] = set(package_lookup.get(package_id, set()))
-    return valid
+    return _shared_valid_pins_by_ref(project)
 
 
 def _package_lookup(project: Project) -> dict[str, Any]:
-    lookup: dict[str, Any] = {}
-    for package in project.packages:
-        lookup[str(package.package_id)] = package
-        if package.name:
-            lookup[str(package.name)] = package
-    return lookup
+    return _shared_package_lookup(project)
 
 
 def _net_anchor(
@@ -3444,8 +3422,8 @@ def _build_stub_label_paths_for_net(
     stub_length_mm: float,
     occupied_segments: list[tuple[str, tuple[float, float], tuple[float, float]]] | None = None,
     forbidden_points: set[tuple[float, float]] | None = None,
-) -> list[list[tuple[float, float]]]:
-    out: list[list[tuple[float, float]]] = []
+) -> list[PlannedNetPath]:
+    out: list[PlannedNetPath] = []
     seen_anchor_keys: set[tuple[float, float]] = set()
     local_segments: list[tuple[str, tuple[float, float], tuple[float, float]]] = []
     occupied_now = list(occupied_segments or [])
@@ -3517,7 +3495,7 @@ def _build_stub_label_paths_for_net(
         if start_key in seen_anchor_keys:
             continue
         seen_anchor_keys.add(start_key)
-        out.append(chosen_path)
+        out.append(PlannedNetPath(points=tuple(chosen_path), owner_refdes=refdes, owner_pin=pin))
         _append_occupied_segments(local_segments, net_name, chosen_path)
     return out
 
@@ -4729,37 +4707,7 @@ def _gate_rotation_and_mirror(rotation_attr: str) -> tuple[float, bool]:
 
 
 def _parse_library_root(lib_path: Path) -> ET.Element | None:
-    try:
-        return ET.parse(lib_path).getroot()
-    except Exception:
-        pass
-
-    try:
-        raw = lib_path.read_text(encoding="utf-8", errors="ignore")
-    except Exception:
-        return None
-
-    sanitized = _sanitize_xml_named_entities(raw)
-    try:
-        return ET.fromstring(sanitized)
-    except Exception:
-        return None
-
-
-def _sanitize_xml_named_entities(text: str) -> str:
-    xml_builtins = {"amp", "lt", "gt", "apos", "quot"}
-    pattern = re.compile(r"&([A-Za-z][A-Za-z0-9]+);")
-
-    def _replace(match: re.Match[str]) -> str:
-        name = str(match.group(1) or "")
-        if name in xml_builtins:
-            return match.group(0)
-        decoded = html.unescape(match.group(0))
-        if decoded == match.group(0):
-            return ""
-        return decoded
-
-    return pattern.sub(_replace, text)
+    return parse_xml_root_with_entity_sanitization(lib_path)
 
 
 def _normalize_power_net_name(name: str) -> str | None:

@@ -1,2 +1,0 @@
-[console_scripts]
-easyeda2fusion = easyeda2fusion.ui.cli:main

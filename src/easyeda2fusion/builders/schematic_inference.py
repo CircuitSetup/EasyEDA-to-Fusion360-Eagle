@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import math
 
-from easyeda2fusion.builders.board_reconstruction import _build_track_net_aliases
+from easyeda2fusion.builders.net_aliases import build_track_net_aliases
 from easyeda2fusion.model import Net, NetNode, Package, Point, Project, Side, SchematicSheet, Severity, project_event
 
 
@@ -36,7 +36,7 @@ def infer_schematic_from_board(project: Project, force: bool = False) -> Schemat
     report.inferred = True
 
     board = project.board
-    net_alias = _build_track_net_aliases(board.tracks, board.vias)
+    net_alias = build_track_net_aliases(board.tracks, board.vias)
     inferred_nodes = _infer_board_pin_nodes(project, net_alias)
 
     # Include named copper features even when no pin-node mapping could be inferred.

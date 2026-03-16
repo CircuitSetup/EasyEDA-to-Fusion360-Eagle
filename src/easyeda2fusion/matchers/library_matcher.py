@@ -10,7 +10,8 @@ from typing import Callable, List, Optional
 import xml.etree.ElementTree as ET
 
 from easyeda2fusion.builders.library_builder import GeneratedLibraryPart, LibraryBuilder
-from easyeda2fusion.builders.board_reconstruction import _project_track_net_aliases
+from easyeda2fusion.builders.net_aliases import project_track_net_aliases
+from easyeda2fusion.builders.package_utils import resolve_component_package as _shared_resolve_component_package
 from easyeda2fusion.model import Component, LibraryMatch, MatchMode, Package, Project, Severity, Side, project_event
 
 
@@ -1611,21 +1612,7 @@ def _variant_pin_count_tokens(variants: set[str]) -> set[int]:
 
 
 def _resolve_component_package(component: Component, package_lookup: dict[str, Package]) -> Package | None:
-    for key in (
-        component.package_id,
-        component.attributes.get("package_name"),
-        component.attributes.get("package"),
-        component.attributes.get("Package"),
-        component.attributes.get("footprint"),
-        component.attributes.get("Footprint"),
-    ):
-        text = str(key or "").strip()
-        if not text:
-            continue
-        candidate = package_lookup.get(text)
-        if candidate is not None:
-            return candidate
-    return None
+    return _shared_resolve_component_package(component, package_lookup)
 
 
 def _external_package_match_is_compatible(
@@ -2358,7 +2345,7 @@ def _board_pin_net_hints(project: Project) -> dict[str, dict[str, set[str]]]:
         package_lookup[package.name] = package
 
     board = project.board
-    net_alias = _project_track_net_aliases(project)
+    net_alias = project_track_net_aliases(project)
     board_pads = [pad for pad in board.pads if str(pad.net or "").strip()]
     board_vias = [via for via in board.vias if str(via.net or "").strip()]
     board_tracks = [track for track in board.tracks if str(track.net or "").strip()]

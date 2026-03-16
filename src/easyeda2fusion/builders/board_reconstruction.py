@@ -1,8 +1,32 @@
 from __future__ import annotations
 
 import math
-import re
 
+from easyeda2fusion.builders.board_layers import (
+    is_copper_layer_num as _shared_is_copper_layer_num,
+    is_keepout_layer_num as _shared_is_keepout_layer_num,
+    layer_number as _shared_layer_number,
+)
+from easyeda2fusion.builders.component_identity import (
+    build_refdes_map as _shared_build_refdes_map,
+    component_instance_key as _shared_component_instance_key,
+    resolve_component_refdes as _shared_resolve_component_refdes,
+    sanitize_refdes as _shared_sanitize_refdes,
+)
+from easyeda2fusion.builders.net_aliases import (
+    build_track_net_aliases as _shared_build_track_net_aliases,
+    canonical_net_name as _shared_canonical_net_name,
+    project_track_net_aliases as _shared_project_track_net_aliases,
+)
+from easyeda2fusion.builders.package_utils import (
+    canonicalize_two_pin_quarter_turn as _shared_canonicalize_two_pin_quarter_turn,
+    component_is_resistor as _shared_component_is_resistor,
+    is_adjustable_resistor_package as _shared_is_adjustable_resistor_package,
+    package_lookup as _shared_package_lookup,
+    package_pin_count as _shared_package_pin_count,
+    resolve_component_package as _shared_resolve_component_package,
+    valid_pins_by_ref as _shared_valid_pins_by_ref,
+)
 from easyeda2fusion.model import Package, Project, Severity, Side, SourceFormat, project_event
 
 _DEFAULT_POLYGON_WIDTH_MM = 0.254
@@ -28,12 +52,21 @@ class BoardReconstructionBuilder:
         valid_pins_by_ref = _valid_pins_by_ref(project)
         placed_refs: set[str] = set()
         skipped_no_device: list[str] = []
-        for component in project.components:
+        placed_instance_records: list[dict[str, str]] = []
+        for ordinal, component in enumerate(project.components, start=1):
             if not str(component.device_id or "").strip():
                 skipped_no_device.append(str(component.refdes or "").strip())
                 continue
             safe_refdes = _resolve_component_refdes(component, refdes_map)
             placed_refs.add(safe_refdes)
+            placed_instance_records.append(
+                {
+                    "source_refdes": str(component.refdes or ""),
+                    "source_instance_id": str(getattr(component, "source_instance_id", "") or ""),
+                    "source_component_key": _component_refdes_key(component, ordinal),
+                    "emitted_refdes": safe_refdes,
+                }
+            )
             package_obj = _resolve_component_package(component, package_lookup)
             effective_rotation_deg = _resolved_board_component_rotation_deg(
                 component=component,
@@ -46,6 +79,8 @@ class BoardReconstructionBuilder:
             move_x, move_y = _component_move_point_mm(component, effective_rotation_deg=effective_rotation_deg)
             lines.append(f"MOVE {safe_refdes} ({move_x:.4f} {move_y:.4f});")
         _record_skipped_components_without_device(project, skipped_no_device)
+        project.metadata["board_instance_refdes_map"] = placed_instance_records
+        project.metadata["board_skipped_components_without_device"] = sorted({item for item in skipped_no_device if item})
 
         # Assign pads to signals first so board imports retain logical connectivity.
         signal_pairs_by_name: dict[str, list[str]] = {}
@@ -191,47 +226,19 @@ class BoardReconstructionBuilder:
 
 
 def _build_refdes_map(project: Project) -> dict[str, str]:
-    mapping: dict[str, str] = {}
-    used: set[str] = set()
-    for ordinal, component in enumerate(project.components, start=1):
-        original = component.refdes
-        base = _sanitize_refdes(original)
-        candidate = base
-        suffix_idx = 2
-        while candidate in used:
-            candidate = f"{base}_{suffix_idx}"
-            suffix_idx += 1
-        mapping.setdefault(original, candidate)
-        mapping[_component_refdes_key(component, ordinal)] = candidate
-        used.add(candidate)
-    return mapping
+    return _shared_build_refdes_map(project)
 
 
 def _component_refdes_key(component, ordinal: int) -> str:
-    source_id = str(getattr(component, "source_instance_id", "") or "").strip()
-    if source_id:
-        return f"{component.refdes}::{source_id}"
-    return f"{component.refdes}::IDX{ordinal}"
+    return _shared_component_instance_key(component, ordinal)
 
 
 def _resolve_component_refdes(component, refdes_map: dict[str, str]) -> str:
-    source_id = str(getattr(component, "source_instance_id", "") or "").strip()
-    if source_id:
-        keyed = refdes_map.get(f"{component.refdes}::{source_id}")
-        if keyed:
-            return keyed
-    return refdes_map.get(component.refdes, _sanitize_refdes(component.refdes))
+    return _shared_resolve_component_refdes(component, refdes_map)
 
 
 def _sanitize_refdes(value: str) -> str:
-    text = str(value or "").strip()
-    text = re.sub(r"[^A-Za-z0-9_]+", "_", text)
-    text = re.sub(r"_+", "_", text).strip("_")
-    if not text:
-        return "U_AUTO"
-    if not text[0].isalpha():
-        text = f"U_{text}"
-    return text
+    return _shared_sanitize_refdes(value)
 
 
 def _quote_token(value: str) -> str:
@@ -240,47 +247,7 @@ def _quote_token(value: str) -> str:
 
 
 def _layer_number(layer_name: str) -> str:
-    key = str(layer_name or "").strip().lower()
-    if key in {"top_copper", "1", "top", "toplayer"}:
-        return "1"
-    if key in {"bottom_copper", "2", "bottom", "bottomlayer"}:
-        return "16"
-    if key in {"3", "top_silkscreen", "topsilkscreen", "topsilklayer", "topsilkscreenlayer"}:
-        return "21"
-    if key in {"4", "bottom_silkscreen", "bottomsilkscreen", "bottomsilklayer", "bottomsilkscreenlayer"}:
-        return "22"
-    if key in {"5", "top_mask", "topsoldermasklayer"}:
-        return "29"
-    if key in {"6", "bottom_mask", "bottomsoldermasklayer"}:
-        return "30"
-    if key in {"7", "top_paste", "toppastemasklayer", "topsolderpastelayer"}:
-        return "31"
-    if key in {"8", "bottom_paste", "bottompastemasklayer", "bottomsolderpastelayer"}:
-        return "32"
-    if key in {"11", "dimension", "outline", "board_outline", "boardoutlinelayer"}:
-        return "20"
-    if key in {"12", "39", "41", "keepout", "keepoutlayer", "tkeepout", "trestrict"}:
-        return "41"
-    if key in {"40", "42", "bkeepout", "brestrict"}:
-        return "42"
-    if key in {"46", "milling", "millinglayer", "route", "routelayer", "cutout", "slot"}:
-        return "46"
-    if key in {"47", "56", "drill", "hole", "holedrawing", "drilldrawinglayer"}:
-        return "44"
-    if key in {"13", "14", "documentation", "mechanical", "t_docu"}:
-        return "51"
-    if key.startswith("inner"):
-        digits = "".join(ch for ch in key if ch.isdigit())
-        if digits:
-            inner_idx = max(1, int(digits))
-            if inner_idx <= 14:
-                return str(1 + inner_idx)
-            return "51"
-    if key.isdigit():
-        idx = int(key)
-        if 15 <= idx <= 28:
-            return str(idx - 13)
-    return "51"
+    return _shared_layer_number(layer_name)
 
 
 def _emit_region_wires(layer: str, points, width_mm: float, close: bool) -> list[str]:
@@ -381,15 +348,11 @@ def _is_copper_polygon_region(layer: str, net_name: str | None, points) -> bool:
 
 
 def _is_copper_layer_num(layer_num: str) -> bool:
-    try:
-        idx = int(layer_num)
-    except Exception:
-        return False
-    return idx == 1 or idx == 16 or 2 <= idx <= 15
+    return _shared_is_copper_layer_num(layer_num)
 
 
 def _is_keepout_layer_num(layer_num: str) -> bool:
-    return str(layer_num) in {"39", "40", "41", "42", "43"}
+    return _shared_is_keepout_layer_num(layer_num)
 
 
 def _is_keepout_region(layer: str, points) -> bool:
@@ -462,25 +425,7 @@ def _track_dedupe_key(
 
 
 def _valid_pins_by_ref(project: Project) -> dict[str, set[str]]:
-    package_lookup: dict[str, set[str]] = {}
-    for package in project.packages:
-        pins = {
-            str(pad.pad_number).strip()
-            for pad in package.pads
-            if str(pad.pad_number).strip()
-        }
-        package_lookup[package.package_id] = pins
-        package_lookup[package.name] = pins
-
-    valid: dict[str, set[str]] = {}
-    for component in project.components:
-        ref = _sanitize_refdes(component.refdes)
-        package_id = str(component.package_id or "").strip()
-        if not package_id:
-            valid[ref] = set()
-            continue
-        valid[ref] = set(package_lookup.get(package_id, set()))
-    return valid
+    return _shared_valid_pins_by_ref(project)
 
 
 def _orientation_token(rotation_deg: float, side: Side) -> str:
@@ -577,59 +522,27 @@ def _board_text_rotation_deg(
 
 
 def _package_lookup(project: Project) -> dict[str, Package]:
-    lookup: dict[str, Package] = {}
-    for package in project.packages:
-        lookup[str(package.package_id)] = package
-        if package.name:
-            lookup[str(package.name)] = package
-    return lookup
+    return _shared_package_lookup(project)
 
 
 def _resolve_component_package(component, package_lookup: dict[str, Package]) -> Package | None:
-    for key in (
-        component.package_id,
-        (getattr(component, "attributes", {}) or {}).get("package_name"),
-        (getattr(component, "attributes", {}) or {}).get("package"),
-        (getattr(component, "attributes", {}) or {}).get("Package"),
-    ):
-        token = str(key or "").strip()
-        if not token:
-            continue
-        pkg = package_lookup.get(token)
-        if pkg is not None:
-            return pkg
-    return None
+    return _shared_resolve_component_package(component, package_lookup)
 
 
 def _package_pin_count(package: Package) -> int:
-    pins = {
-        str(pad.pad_number).strip()
-        for pad in package.pads
-        if str(pad.pad_number).strip()
-    }
-    return len(pins)
+    return _shared_package_pin_count(package)
 
 
 def _component_is_resistor(component) -> bool:
-    ref = _sanitize_refdes(str(getattr(component, "refdes", "") or "")).upper()
-    if re.match(r"^R[0-9]", ref):
-        return True
-    source = str(getattr(component, "source_name", "") or "").upper()
-    if "RES" in source:
-        return True
-    return False
+    return _shared_component_is_resistor(component)
 
 
 def _canonicalize_two_pin_quarter_turn(rotation_deg: float) -> float:
-    angle = int(round(float(rotation_deg or 0.0))) % 360
-    if angle == 270:
-        return 90.0
-    return float(angle)
+    return _shared_canonicalize_two_pin_quarter_turn(rotation_deg)
 
 
 def _is_adjustable_resistor_package(package: Package) -> bool:
-    token = _norm_pkg_token(str(package.name or package.package_id or ""))
-    return "RESADJ" in token or "TRIMMER" in token
+    return _shared_is_adjustable_resistor_package(package)
 
 
 def _norm_pkg_token(value: str) -> str:
@@ -637,99 +550,15 @@ def _norm_pkg_token(value: str) -> str:
 
 
 def _canonical_net_name(name: str | None, net_alias: dict[str, str]) -> str:
-    raw = str(name or "").strip()
-    if not raw:
-        return ""
-    return net_alias.get(raw, raw)
+    return _shared_canonical_net_name(name, net_alias)
 
 
 def _build_track_net_aliases(tracks, vias=None) -> dict[str, str]:
-    candidate_tracks = [
-        track
-        for track in tracks
-        if str(track.net or "").strip()
-        and _is_copper_layer_num(_layer_number(track.layer))
-    ]
-    if len(candidate_tracks) < 2:
-        return {}
-
-    uf = _UnionFind()
-    for track in candidate_tracks:
-        uf.add(str(track.net).strip())
-
-    for idx in range(len(candidate_tracks)):
-        left = candidate_tracks[idx]
-        left_net = str(left.net or "").strip()
-        left_layer = _layer_number(left.layer)
-        if not left_net:
-            continue
-        left_seg = ((float(left.start.x_mm), float(left.start.y_mm)), (float(left.end.x_mm), float(left.end.y_mm)))
-        for jdx in range(idx + 1, len(candidate_tracks)):
-            right = candidate_tracks[jdx]
-            right_net = str(right.net or "").strip()
-            if not right_net or right_net == left_net:
-                continue
-            if _layer_number(right.layer) != left_layer:
-                continue
-            right_seg = ((float(right.start.x_mm), float(right.start.y_mm)), (float(right.end.x_mm), float(right.end.y_mm)))
-            if _segments_touch_or_overlap(left_seg, right_seg):
-                uf.union(left_net, right_net)
-
-    for via in vias or []:
-        via_net = str(getattr(via, "net", "") or "").strip()
-        touching: set[str] = set()
-        if via_net:
-            uf.add(via_net)
-            touching.add(via_net)
-
-        vx = float(via.at.x_mm)
-        vy = float(via.at.y_mm)
-        for track in candidate_tracks:
-            track_net = str(track.net or "").strip()
-            if not track_net:
-                continue
-            segment = (
-                (float(track.start.x_mm), float(track.start.y_mm)),
-                (float(track.end.x_mm), float(track.end.y_mm)),
-            )
-            if _point_on_segment((vx, vy), segment):
-                touching.add(track_net)
-
-        if len(touching) >= 2:
-            touching_list = sorted(touching)
-            base = touching_list[0]
-            for other in touching_list[1:]:
-                uf.union(base, other)
-
-    groups = uf.groups()
-    aliases: dict[str, str] = {}
-    for members in groups.values():
-        if len(members) < 2:
-            continue
-        canonical = _pick_canonical_net_name(members)
-        for member in members:
-            aliases[member] = canonical
-    return aliases
+    return _shared_build_track_net_aliases(tracks, vias)
 
 
 def _project_track_net_aliases(project: Project) -> dict[str, str]:
-    board = project.board
-    if board is None:
-        return {}
-
-    metadata = getattr(project, "metadata", None)
-    if isinstance(metadata, dict):
-        cached = metadata.get("_track_net_aliases")
-        if isinstance(cached, dict):
-            return {
-                str(key): str(value)
-                for key, value in cached.items()
-            }
-
-    aliases = _build_track_net_aliases(board.tracks, board.vias)
-    if isinstance(metadata, dict):
-        metadata["_track_net_aliases"] = dict(aliases)
-    return aliases
+    return _shared_project_track_net_aliases(project)
 
 
 def _pick_canonical_net_name(names: list[str]) -> str:

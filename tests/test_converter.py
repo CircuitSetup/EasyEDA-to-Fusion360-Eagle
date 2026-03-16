@@ -7,11 +7,14 @@ import pytest
 from easyeda2fusion.builders.normalizer import Normalizer
 from easyeda2fusion.converter import ConversionConfig, Converter
 from easyeda2fusion.matchers.library_loader import _entries_from_lbr_file
-from easyeda2fusion.matchers.library_matcher import LibraryEntry, LibraryMatcher
+from easyeda2fusion.matchers.library_matcher import LibraryEntry, LibraryMatcher, MatchContext
 from easyeda2fusion.model import ConversionMode, MatchMode
 from easyeda2fusion.model import (
     Board,
     Component,
+    Device,
+    Net,
+    NetNode,
     Package,
     Pad,
     ParsedDocument,
@@ -19,9 +22,12 @@ from easyeda2fusion.model import (
     Point,
     Project,
     SourceFormat,
+    Symbol,
+    SymbolPin,
     Track,
 )
 from easyeda2fusion.parsers import parse_easyeda_files
+from easyeda2fusion.reports.validation import validate_project
 
 
 def test_full_project_conversion(fixtures_dir, tmp_path):
@@ -31,6 +37,7 @@ def test_full_project_conversion(fixtures_dir, tmp_path):
         output_dir=output,
         mode=ConversionMode.FULL,
         match_mode=MatchMode.AUTO,
+        use_default_fusion_libraries=False,
     )
 
     result = Converter().run(config)
@@ -85,6 +92,7 @@ def test_board_only_inferred_schematic_reconstruction(fixtures_dir, tmp_path):
         output_dir=output,
         mode=ConversionMode.BOARD_INFER_SCHEMATIC,
         match_mode=MatchMode.AUTO,
+        use_default_fusion_libraries=False,
     )
 
     result = Converter().run(config)
@@ -103,6 +111,7 @@ def test_converter_defaults_schematic_layout_mode_to_board(fixtures_dir, tmp_pat
         output_dir=output,
         mode=ConversionMode.BOARD_INFER_SCHEMATIC,
         match_mode=MatchMode.AUTO,
+        use_default_fusion_libraries=False,
     )
 
     Converter().run(config)
@@ -119,11 +128,13 @@ def test_converter_validation_includes_schematic_organization_metrics(fixtures_d
         mode=ConversionMode.BOARD_INFER_SCHEMATIC,
         match_mode=MatchMode.AUTO,
         schematic_layout_mode="human",
+        use_default_fusion_libraries=False,
     )
 
     Converter().run(config)
     payload = json.loads((output / "reports" / "validation_report.json").read_text(encoding="utf-8"))
     metrics = payload.get("metrics", {})
+    assert isinstance(payload.get("issues"), list)
     assert "schematic_organization_block_count" in metrics
     assert "schematic_organization_crossing_risk_score" in metrics
     assert "schematic_organization_overlap_count" in metrics
@@ -185,6 +196,7 @@ def test_unresolved_part_reporting(fixtures_dir, tmp_path):
         output_dir=output,
         mode=ConversionMode.FULL,
         match_mode=MatchMode.STRICT,
+        use_default_fusion_libraries=False,
     )
 
     result = Converter().run(config)
@@ -193,6 +205,86 @@ def test_unresolved_part_reporting(fixtures_dir, tmp_path):
     unresolved_csv = output / "reports" / "unresolved_parts.csv"
     content = unresolved_csv.read_text(encoding="utf-8")
     assert "U1" in content
+
+
+def test_validation_report_uses_emitted_instance_metadata() -> None:
+    project = Project(
+        project_id="p_validation_emitted_instances",
+        name="p_validation_emitted_instances",
+        source_format=SourceFormat.EASYEDA_STD,
+        input_files=[],
+        symbols=[
+            Symbol(
+                symbol_id="SYM",
+                name="SYM",
+                pins=[
+                    SymbolPin(pin_number="1", pin_name="1", at=Point(0.0, 0.0)),
+                    SymbolPin(pin_number="2", pin_name="2", at=Point(2.54, 0.0)),
+                ],
+            )
+        ],
+        devices=[
+            Device(
+                device_id="DEV",
+                name="DEV",
+                symbol_id="SYM",
+                package_id="PKG",
+                pin_pad_map={"1": "1", "2": "2"},
+            )
+        ],
+        packages=[
+            Package(
+                package_id="PKG",
+                name="PKG",
+                pads=[
+                    Pad(pad_number="1", at=Point(0.0, 0.0), shape="rect", width_mm=1.0, height_mm=1.0),
+                    Pad(pad_number="2", at=Point(2.54, 0.0), shape="rect", width_mm=1.0, height_mm=1.0),
+                ],
+            )
+        ],
+        components=[
+            Component(refdes="U1", value="", source_name="U", device_id="DEV", package_id="PKG", symbol_id="SYM", at=Point(0.0, 0.0)),
+            Component(refdes="U2", value="", source_name="U", device_id="DEV", package_id="PKG", symbol_id="SYM", at=Point(10.0, 0.0)),
+        ],
+        nets=[
+            Net(
+                name="SIG",
+                nodes=[NetNode(refdes="U1", pin="1"), NetNode(refdes="U2", pin="1")],
+            )
+        ],
+        board=Board(),
+        metadata={
+            "board_instance_refdes_map": [
+                {
+                    "source_refdes": "U1",
+                    "source_instance_id": "",
+                    "source_component_key": "U1::IDX1",
+                    "emitted_refdes": "U1",
+                }
+            ],
+            "schematic_instance_refdes_map": [
+                {
+                    "source_refdes": "U1",
+                    "source_instance_id": "",
+                    "source_component_key": "U1::IDX1",
+                    "emitted_refdes": "U1",
+                },
+                {
+                    "source_refdes": "U2",
+                    "source_instance_id": "",
+                    "source_component_key": "U2::IDX2",
+                    "emitted_refdes": "U2",
+                },
+            ],
+        },
+    )
+
+    report = validate_project(project, MatchContext(), None)
+
+    assert report.metrics["board_emitted_component_instance_count"] == 1
+    assert report.metrics["schematic_emitted_component_instance_count"] == 2
+    mismatch = next(issue for issue in report.issues if issue.code == "BOARD_INSTANCE_COUNT_MISMATCH")
+    assert mismatch.context.get("missing_component_keys") == ["U2::IDX2"]
 
 
 def test_multilayer_board_layer_mapping(fixtures_dir):
