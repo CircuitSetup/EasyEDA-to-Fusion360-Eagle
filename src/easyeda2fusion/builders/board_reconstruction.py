@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import math
 
 from easyeda2fusion.builders.board_layers import (
@@ -30,6 +31,26 @@ from easyeda2fusion.builders.package_utils import (
 from easyeda2fusion.model import Package, Project, Severity, Side, SourceFormat, project_event
 
 _DEFAULT_POLYGON_WIDTH_MM = 0.254
+_PAD_TOUCH_TOLERANCE_MM = 0.10
+_PAD_NEAR_TOLERANCE_MM = 0.35
+_PAD_CENTER_TOLERANCE_MM = 0.02
+
+
+@dataclass(frozen=True)
+class _PadAnchorTarget:
+    refdes: str
+    source_instance_id: str
+    pad_number: str
+    net_name: str
+    layer: str
+    center_x_mm: float
+    center_y_mm: float
+    width_mm: float
+    height_mm: float
+    rotation_deg: float
+    shape: str
+    drill_mm: float | None
+    authoritative: bool
 
 
 class BoardReconstructionBuilder:
@@ -81,6 +102,9 @@ class BoardReconstructionBuilder:
         _record_skipped_components_without_device(project, skipped_no_device)
         project.metadata["board_instance_refdes_map"] = placed_instance_records
         project.metadata["board_skipped_components_without_device"] = sorted({item for item in skipped_no_device if item})
+        pad_anchor_targets = _build_trace_pad_anchor_targets(project, package_lookup, net_alias)
+        anchor_records: list[dict[str, object]] = []
+        unresolved_touch_records: list[dict[str, object]] = []
 
         # Assign pads to signals first so board imports retain logical connectivity.
         signal_pairs_by_name: dict[str, list[str]] = {}
@@ -155,6 +179,8 @@ class BoardReconstructionBuilder:
 
         current_layer = ""
         emitted_track_keys: set[tuple[str, str, str, str, str, str]] = set()
+        emitted_anchor_keys: set[tuple[str, str, str, str, str, str]] = set()
+        seen_unresolved_touch_keys: set[tuple[str, str, str, str, str, str, str, str]] = set()
         for track in board.tracks:
             if (
                 abs(track.start.x_mm - track.end.x_mm) < 1e-6
@@ -181,9 +207,71 @@ class BoardReconstructionBuilder:
                 # "merge N$xx" prompts during script replay.
                 wire_prefix = f"WIRE {_quote_token(canonical_track_net)}"
             wire_width = _track_wire_width_for_layer(layer_number, track.width_mm)
+            if canonical_track_net and _is_copper_layer_num(layer_number):
+                track_segment_key = _track_segment_key(
+                    layer_number=layer_number,
+                    net_name=canonical_track_net,
+                    wire_width=wire_width,
+                    start=(float(track.start.x_mm), float(track.start.y_mm)),
+                    end=(float(track.end.x_mm), float(track.end.y_mm)),
+                )
+                if track_segment_key in emitted_anchor_keys:
+                    continue
+                emitted_anchor_keys.add(track_segment_key)
             lines.append(
                 f"{wire_prefix} {wire_width:.4f} ({track.start.x_mm:.4f} {track.start.y_mm:.4f}) ({track.end.x_mm:.4f} {track.end.y_mm:.4f});"
             )
+            if canonical_track_net and _is_copper_layer_num(layer_number):
+                anchors, unresolved = _trace_pad_anchor_segments(
+                    track=track,
+                    track_layer_number=layer_number,
+                    canonical_track_net=canonical_track_net,
+                    pad_anchor_targets=pad_anchor_targets,
+                    track_width_mm=float(track.width_mm or 0.0),
+                )
+                for issue in unresolved:
+                    key = (
+                        str(issue.get("net_name") or ""),
+                        str(issue.get("track_layer") or ""),
+                        f"{float(issue.get('track_endpoint_x_mm', 0.0)):.4f}",
+                        f"{float(issue.get('track_endpoint_y_mm', 0.0)):.4f}",
+                        str(issue.get("target_refdes") or ""),
+                        str(issue.get("target_pad") or ""),
+                        f"{float(issue.get('target_center_x_mm', 0.0)):.4f}",
+                        f"{float(issue.get('target_center_y_mm', 0.0)):.4f}",
+                    )
+                    if key in seen_unresolved_touch_keys:
+                        continue
+                    seen_unresolved_touch_keys.add(key)
+                    unresolved_touch_records.append(issue)
+                for start, end, target in anchors:
+                    anchor_key = _track_segment_key(
+                        layer_number=layer_number,
+                        net_name=canonical_track_net,
+                        wire_width=wire_width,
+                        start=start,
+                        end=end,
+                    )
+                    if anchor_key in emitted_anchor_keys:
+                        continue
+                    emitted_anchor_keys.add(anchor_key)
+                    lines.append(
+                        f"WIRE {_quote_token(canonical_track_net)} {wire_width:.4f} ({start[0]:.4f} {start[1]:.4f}) ({end[0]:.4f} {end[1]:.4f});"
+                    )
+                    anchor_records.append(
+                        {
+                            "net_name": canonical_track_net,
+                            "track_layer": layer_number,
+                            "track_width_mm": wire_width,
+                            "anchor_start_x_mm": start[0],
+                            "anchor_start_y_mm": start[1],
+                            "anchor_end_x_mm": end[0],
+                            "anchor_end_y_mm": end[1],
+                            "target_refdes": target.refdes,
+                            "target_pad": target.pad_number,
+                            "authoritative": target.authoritative,
+                        }
+                    )
 
         for via in board.vias:
             via_drill = max(float(via.drill_mm), 0.05)
@@ -221,6 +309,10 @@ class BoardReconstructionBuilder:
                     f"TEXT '{payload}' ({text.at.x_mm:.4f} {text.at.y_mm:.4f}) {orient};"
                 )
 
+        project.metadata["board_trace_pad_anchors"] = anchor_records
+        project.metadata["board_trace_pad_anchor_count"] = len(anchor_records)
+        project.metadata["board_trace_pad_touch_unresolved"] = unresolved_touch_records
+        project.metadata["board_trace_pad_touch_unresolved_count"] = len(unresolved_touch_records)
         lines.append("RATSNEST;")
         return lines
 
@@ -422,6 +514,481 @@ def _track_dedupe_key(
         f"{sy:.4f}",
         f"{ex:.4f},{ey:.4f}",
     )
+
+
+def _track_segment_key(
+    layer_number: str,
+    net_name: str,
+    wire_width: float,
+    start: tuple[float, float],
+    end: tuple[float, float],
+) -> tuple[str, str, str, str, str, str]:
+    sx = float(start[0])
+    sy = float(start[1])
+    ex = float(end[0])
+    ey = float(end[1])
+    if (ex < sx) or (abs(ex - sx) < 1e-9 and ey < sy):
+        sx, sy, ex, ey = ex, ey, sx, sy
+
+    return (
+        str(layer_number),
+        str(net_name or ""),
+        f"{float(wire_width):.4f}",
+        f"{sx:.4f}",
+        f"{sy:.4f}",
+        f"{ex:.4f},{ey:.4f}",
+    )
+
+
+def _build_trace_pad_anchor_targets(
+    project: Project,
+    package_lookup: dict[str, Package],
+    net_alias: dict[str, str],
+) -> list[_PadAnchorTarget]:
+    board = project.board
+    if board is None:
+        return []
+
+    board_pads = list(board.pads or [])
+    board_pad_points = [
+        (float(pad.at.x_mm), float(pad.at.y_mm))
+        for pad in board_pads
+    ]
+    board_pad_lookup = _build_component_board_pad_lookup(board_pads)
+    component_pin_nets = _component_pin_net_lookup(project, net_alias)
+
+    targets: list[_PadAnchorTarget] = []
+    authoritative_keys: set[tuple[str, str, str]] = set()
+    for pad in board_pads:
+        target = _authoritative_pad_anchor_target(pad, net_alias)
+        if target is None:
+            continue
+        targets.append(target)
+        authoritative_keys.add(
+            (
+                str(target.refdes or "").strip(),
+                str(target.source_instance_id or "").strip(),
+                str(target.pad_number or "").strip(),
+            )
+        )
+
+    for component in project.components:
+        package = _resolve_component_package(component, package_lookup)
+        if package is None or not package.pads:
+            continue
+
+        effective_rotation_deg = _resolved_board_component_rotation_deg(
+            component=component,
+            source_format=project.source_format,
+            package=package,
+        )
+        origin_x, origin_y = _component_move_point_mm(
+            component,
+            effective_rotation_deg=effective_rotation_deg,
+        )
+        mirror_x, mirror_y = _select_component_package_pad_variant(
+            component=component,
+            package=package,
+            origin_x_mm=float(origin_x),
+            origin_y_mm=float(origin_y),
+            rotation_deg=float(effective_rotation_deg or 0.0),
+            board_pad_points=board_pad_points,
+        )
+
+        refdes = str(component.refdes or "").strip()
+        source_id = str(getattr(component, "source_instance_id", "") or "").strip()
+        for pad in package.pads:
+            pad_number = str(getattr(pad, "pad_number", "") or "").strip()
+            if not pad_number:
+                continue
+            if _same_component_board_pad_exists(component, pad_number, board_pad_lookup):
+                continue
+            if (refdes, source_id, pad_number) in authoritative_keys:
+                continue
+            net_name = component_pin_nets.get((refdes, pad_number), "")
+            if not net_name:
+                continue
+            targets.append(
+                _transformed_pad_anchor_target(
+                    component=component,
+                    pad=pad,
+                    net_name=net_name,
+                    origin_x_mm=float(origin_x),
+                    origin_y_mm=float(origin_y),
+                    rotation_deg=float(effective_rotation_deg or 0.0),
+                    mirror_x=mirror_x,
+                    mirror_y=mirror_y,
+                )
+            )
+
+    return targets
+
+
+def _component_pin_net_lookup(project: Project, net_alias: dict[str, str]) -> dict[tuple[str, str], str]:
+    pin_nets: dict[tuple[str, str], set[str]] = {}
+    for net in project.nets:
+        canonical = _canonical_net_name(net.name, net_alias)
+        if not canonical:
+            continue
+        for node in net.nodes:
+            refdes = str(node.refdes or "").strip()
+            pin = str(node.pin or "").strip()
+            if not refdes or not pin:
+                continue
+            pin_nets.setdefault((refdes, pin), set()).add(canonical)
+    return {
+        key: _pick_canonical_net_name(sorted(values))
+        for key, values in pin_nets.items()
+        if values
+    }
+
+
+def _build_component_board_pad_lookup(board_pads) -> dict[str, dict[tuple[str, ...], list]]:
+    by_ref_source_pad: dict[tuple[str, str, str], list] = {}
+    by_ref_pad: dict[tuple[str, str], list] = {}
+    by_source_pad: dict[tuple[str, str], list] = {}
+
+    for pad in board_pads:
+        refdes = str(getattr(pad, "component_refdes", "") or "").strip()
+        source_id = str(getattr(pad, "source_instance_id", "") or "").strip()
+        pad_number = str(getattr(pad, "pad_number", "") or "").strip()
+        if not pad_number:
+            continue
+        if refdes:
+            by_ref_pad.setdefault((refdes, pad_number), []).append(pad)
+            if source_id:
+                by_ref_source_pad.setdefault((refdes, source_id, pad_number), []).append(pad)
+        if source_id:
+            by_source_pad.setdefault((source_id, pad_number), []).append(pad)
+
+    return {
+        "by_ref_source_pad": by_ref_source_pad,
+        "by_ref_pad": by_ref_pad,
+        "by_source_pad": by_source_pad,
+    }
+
+
+def _same_component_board_pad_exists(
+    component,
+    pad_number: str,
+    board_pad_lookup: dict[str, dict[tuple[str, ...], list]],
+) -> bool:
+    refdes = str(getattr(component, "refdes", "") or "").strip()
+    source_id = str(getattr(component, "source_instance_id", "") or "").strip()
+    token = str(pad_number or "").strip()
+    if not token:
+        return False
+    if refdes and source_id and board_pad_lookup["by_ref_source_pad"].get((refdes, source_id, token)):
+        return True
+    if refdes and board_pad_lookup["by_ref_pad"].get((refdes, token)):
+        return True
+    if source_id and board_pad_lookup["by_source_pad"].get((source_id, token)):
+        return True
+    return False
+
+
+def _authoritative_pad_anchor_target(pad, net_alias: dict[str, str]) -> _PadAnchorTarget | None:
+    refdes = str(getattr(pad, "component_refdes", "") or "").strip()
+    source_id = str(getattr(pad, "source_instance_id", "") or "").strip()
+    pad_number = str(getattr(pad, "pad_number", "") or "").strip()
+    net_name = _canonical_net_name(getattr(pad, "net", None), net_alias)
+    if not pad_number or not net_name:
+        return None
+    if not refdes and not source_id:
+        return None
+    return _PadAnchorTarget(
+        refdes=refdes,
+        source_instance_id=source_id,
+        pad_number=pad_number,
+        net_name=net_name,
+        layer=str(getattr(pad, "layer", "") or ""),
+        center_x_mm=float(pad.at.x_mm),
+        center_y_mm=float(pad.at.y_mm),
+        width_mm=max(float(getattr(pad, "width_mm", 0.0) or 0.0), 0.0),
+        height_mm=max(float(getattr(pad, "height_mm", 0.0) or 0.0), 0.0),
+        rotation_deg=float(getattr(pad, "rotation_deg", 0.0) or 0.0),
+        shape=str(getattr(pad, "shape", "") or "rect"),
+        drill_mm=float(getattr(pad, "drill_mm", 0.0)) if getattr(pad, "drill_mm", None) is not None else None,
+        authoritative=True,
+    )
+
+
+def _transformed_pad_anchor_target(
+    component,
+    pad,
+    net_name: str,
+    origin_x_mm: float,
+    origin_y_mm: float,
+    rotation_deg: float,
+    mirror_x: bool,
+    mirror_y: bool,
+) -> _PadAnchorTarget:
+    center_x, center_y = _transform_package_local_point_to_world(
+        component=component,
+        x_mm=float(pad.at.x_mm),
+        y_mm=float(pad.at.y_mm),
+        origin_x_mm=origin_x_mm,
+        origin_y_mm=origin_y_mm,
+        rotation_deg=rotation_deg,
+        mirror_x=mirror_x,
+        mirror_y=mirror_y,
+    )
+    local_angle = math.radians(float(getattr(pad, "rotation_deg", 0.0) or 0.0))
+    axis_x = float(pad.at.x_mm) + math.cos(local_angle)
+    axis_y = float(pad.at.y_mm) + math.sin(local_angle)
+    axis_world_x, axis_world_y = _transform_package_local_point_to_world(
+        component=component,
+        x_mm=axis_x,
+        y_mm=axis_y,
+        origin_x_mm=origin_x_mm,
+        origin_y_mm=origin_y_mm,
+        rotation_deg=rotation_deg,
+        mirror_x=mirror_x,
+        mirror_y=mirror_y,
+    )
+    world_rotation = math.degrees(math.atan2(axis_world_y - center_y, axis_world_x - center_x)) % 360.0
+    return _PadAnchorTarget(
+        refdes=str(getattr(component, "refdes", "") or "").strip(),
+        source_instance_id=str(getattr(component, "source_instance_id", "") or "").strip(),
+        pad_number=str(getattr(pad, "pad_number", "") or "").strip(),
+        net_name=str(net_name or "").strip(),
+        layer=str(getattr(pad, "layer", "") or ""),
+        center_x_mm=float(center_x),
+        center_y_mm=float(center_y),
+        width_mm=max(float(getattr(pad, "width_mm", 0.0) or 0.0), 0.0),
+        height_mm=max(float(getattr(pad, "height_mm", 0.0) or 0.0), 0.0),
+        rotation_deg=float(world_rotation),
+        shape=str(getattr(pad, "shape", "") or "rect"),
+        drill_mm=float(getattr(pad, "drill_mm", 0.0)) if getattr(pad, "drill_mm", None) is not None else None,
+        authoritative=False,
+    )
+
+
+def _trace_pad_anchor_segments(
+    track,
+    track_layer_number: str,
+    canonical_track_net: str,
+    pad_anchor_targets: list[_PadAnchorTarget],
+    track_width_mm: float,
+) -> tuple[list[tuple[tuple[float, float], tuple[float, float], _PadAnchorTarget]], list[dict[str, object]]]:
+    if not canonical_track_net or not _is_copper_layer_num(track_layer_number):
+        return [], []
+
+    candidates = [
+        target
+        for target in pad_anchor_targets
+        if target.net_name == canonical_track_net
+        and _pad_target_supports_track_layer(target, track_layer_number)
+    ]
+    if not candidates:
+        return [], []
+
+    anchors: list[tuple[tuple[float, float], tuple[float, float], _PadAnchorTarget]] = []
+    unresolved: list[dict[str, object]] = []
+    endpoints = (
+        ("start", (float(track.start.x_mm), float(track.start.y_mm))),
+        ("end", (float(track.end.x_mm), float(track.end.y_mm))),
+    )
+    for endpoint_name, (x_mm, y_mm) in endpoints:
+        target = _best_pad_target_for_endpoint(
+            x_mm=x_mm,
+            y_mm=y_mm,
+            candidates=candidates,
+            tolerance_mm=_PAD_TOUCH_TOLERANCE_MM,
+            track_width_mm=track_width_mm,
+        )
+        if target is not None:
+            if not _point_matches_pad_center(x_mm, y_mm, target, _PAD_CENTER_TOLERANCE_MM):
+                anchors.append(
+                    (
+                        (target.center_x_mm, target.center_y_mm),
+                        (x_mm, y_mm),
+                        target,
+                    )
+                )
+            continue
+
+        near_target = _best_pad_target_for_endpoint(
+            x_mm=x_mm,
+            y_mm=y_mm,
+            candidates=candidates,
+            tolerance_mm=_PAD_NEAR_TOLERANCE_MM,
+            track_width_mm=track_width_mm,
+        )
+        if near_target is None:
+            continue
+        if _point_matches_pad_center(x_mm, y_mm, near_target, _PAD_CENTER_TOLERANCE_MM):
+            continue
+        unresolved.append(
+            {
+                "net_name": canonical_track_net,
+                "track_layer": str(track_layer_number),
+                "endpoint": endpoint_name,
+                "track_endpoint_x_mm": x_mm,
+                "track_endpoint_y_mm": y_mm,
+                "target_refdes": near_target.refdes,
+                "target_pad": near_target.pad_number,
+                "target_center_x_mm": near_target.center_x_mm,
+                "target_center_y_mm": near_target.center_y_mm,
+                "target_authoritative": near_target.authoritative,
+            }
+        )
+
+    return anchors, unresolved
+
+
+def _best_pad_target_for_endpoint(
+    x_mm: float,
+    y_mm: float,
+    candidates: list[_PadAnchorTarget],
+    tolerance_mm: float,
+    track_width_mm: float,
+) -> _PadAnchorTarget | None:
+    best_target: _PadAnchorTarget | None = None
+    best_key: tuple[int, float, str, str] | None = None
+    for target in candidates:
+        if not _point_touches_pad_copper(
+            x_mm,
+            y_mm,
+            target,
+            tolerance_mm=tolerance_mm,
+            track_width_mm=track_width_mm,
+        ):
+            continue
+        distance = math.hypot(x_mm - target.center_x_mm, y_mm - target.center_y_mm)
+        sort_key = (
+            0 if target.authoritative else 1,
+            distance,
+            str(target.refdes or ""),
+            str(target.pad_number or ""),
+        )
+        if best_key is None or sort_key < best_key:
+            best_key = sort_key
+            best_target = target
+    return best_target
+
+
+def _point_matches_pad_center(
+    x_mm: float,
+    y_mm: float,
+    target: _PadAnchorTarget,
+    tolerance_mm: float,
+) -> bool:
+    return math.hypot(x_mm - target.center_x_mm, y_mm - target.center_y_mm) <= float(tolerance_mm)
+
+
+def _pad_target_supports_track_layer(target: _PadAnchorTarget, track_layer_number: str) -> bool:
+    if not _is_copper_layer_num(track_layer_number):
+        return False
+    if target.drill_mm is not None and float(target.drill_mm) > 0.0:
+        return True
+    pad_layer_number = _pad_copper_layer_number(target.layer)
+    if not pad_layer_number:
+        return False
+    return str(pad_layer_number) == str(track_layer_number)
+
+
+def _pad_copper_layer_number(layer_name: str) -> str:
+    token = str(layer_name or "").strip().lower()
+    if token in {"top_copper", "top", "toplayer", "1"}:
+        return "1"
+    if token in {"bottom_copper", "bottom", "bottomlayer", "2"}:
+        return "16"
+    layer_num = _layer_number(layer_name)
+    if _is_copper_layer_num(layer_num):
+        return layer_num
+    return ""
+
+
+def _point_touches_pad_copper(
+    x_mm: float,
+    y_mm: float,
+    target: _PadAnchorTarget,
+    tolerance_mm: float,
+    track_width_mm: float,
+) -> bool:
+    if target.width_mm <= 0.0 or target.height_mm <= 0.0:
+        return False
+    local_x, local_y = _point_in_pad_local_frame(x_mm, y_mm, target)
+    effective_tolerance_mm = _effective_pad_touch_tolerance(
+        tolerance_mm=tolerance_mm,
+        track_width_mm=track_width_mm,
+    )
+    return _pad_shape_contains_local_point(
+        x_mm=local_x,
+        y_mm=local_y,
+        width_mm=target.width_mm,
+        height_mm=target.height_mm,
+        shape=target.shape,
+        tolerance_mm=effective_tolerance_mm,
+    )
+
+
+def _effective_pad_touch_tolerance(
+    tolerance_mm: float,
+    track_width_mm: float,
+) -> float:
+    # EasyEDA track coordinates describe the trace centerline; during replay a
+    # trace can already overlap pad copper even when the endpoint center is just
+    # outside the pad body. Expand the pad touch test by half the track width so
+    # we can add a minimal anchor for genuine same-net copper contact.
+    return max(float(tolerance_mm), 0.0) + max(float(track_width_mm), 0.0) * 0.5
+
+
+def _point_in_pad_local_frame(
+    x_mm: float,
+    y_mm: float,
+    target: _PadAnchorTarget,
+) -> tuple[float, float]:
+    dx = float(x_mm) - float(target.center_x_mm)
+    dy = float(y_mm) - float(target.center_y_mm)
+    angle = math.radians(float(target.rotation_deg or 0.0))
+    cos_a = math.cos(angle)
+    sin_a = math.sin(angle)
+    local_x = dx * cos_a + dy * sin_a
+    local_y = -dx * sin_a + dy * cos_a
+    return local_x, local_y
+
+
+def _pad_shape_contains_local_point(
+    x_mm: float,
+    y_mm: float,
+    width_mm: float,
+    height_mm: float,
+    shape: str,
+    tolerance_mm: float,
+) -> bool:
+    half_w = max(float(width_mm) * 0.5 + float(tolerance_mm), 0.0)
+    half_h = max(float(height_mm) * 0.5 + float(tolerance_mm), 0.0)
+    if half_w <= 0.0 or half_h <= 0.0:
+        return False
+
+    shape_key = str(shape or "").strip().lower()
+    if shape_key in {"rect", "rectangle", "square"}:
+        return abs(x_mm) <= half_w and abs(y_mm) <= half_h
+    if shape_key in {"oval", "ellipse", "oblong", "long", "roundrect"}:
+        return _capsule_contains_local_point(x_mm, y_mm, half_w, half_h)
+    return ((x_mm / half_w) ** 2 + (y_mm / half_h) ** 2) <= 1.0 + 1e-9
+
+
+def _capsule_contains_local_point(
+    x_mm: float,
+    y_mm: float,
+    half_w: float,
+    half_h: float,
+) -> bool:
+    if half_w <= half_h:
+        core_half = max(half_h - half_w, 0.0)
+        if abs(y_mm) <= core_half and abs(x_mm) <= half_w:
+            return True
+        cap_y = core_half if y_mm >= 0.0 else -core_half
+        return (x_mm * x_mm) + ((y_mm - cap_y) * (y_mm - cap_y)) <= (half_w * half_w) + 1e-9
+
+    core_half = max(half_w - half_h, 0.0)
+    if abs(x_mm) <= core_half and abs(y_mm) <= half_h:
+        return True
+    cap_x = core_half if x_mm >= 0.0 else -core_half
+    return ((x_mm - cap_x) * (x_mm - cap_x)) + (y_mm * y_mm) <= (half_h * half_h) + 1e-9
 
 
 def _valid_pins_by_ref(project: Project) -> dict[str, set[str]]:
@@ -776,8 +1343,37 @@ def _component_package_pad_world_points(
     rotation_deg: float,
     board_pad_points: list[tuple[float, float]],
 ) -> list[tuple[float, float]]:
-    variants = [(False, False), (True, False), (False, True), (True, True)]
-    scored: list[tuple[float, list[tuple[float, float]]]] = []
+    mirror_x, mirror_y = _select_component_package_pad_variant(
+        component=component,
+        package=package,
+        origin_x_mm=origin_x_mm,
+        origin_y_mm=origin_y_mm,
+        rotation_deg=rotation_deg,
+        board_pad_points=board_pad_points,
+    )
+    return _transform_package_pad_points(
+        component=component,
+        package=package,
+        origin_x_mm=origin_x_mm,
+        origin_y_mm=origin_y_mm,
+        rotation_deg=rotation_deg,
+        mirror_x=mirror_x,
+        mirror_y=mirror_y,
+    )
+
+
+def _select_component_package_pad_variant(
+    component,
+    package: Package,
+    origin_x_mm: float,
+    origin_y_mm: float,
+    rotation_deg: float,
+    board_pad_points: list[tuple[float, float]],
+) -> tuple[bool, bool]:
+    variants = ((False, False), (True, False), (False, True), (True, True))
+    best_variant = variants[0]
+    best_score = float("inf")
+    best_length = 0
     for mirror_x, mirror_y in variants:
         transformed = _transform_package_pad_points(
             component=component,
@@ -789,10 +1385,13 @@ def _component_package_pad_world_points(
             mirror_y=mirror_y,
         )
         score = _pad_fit_score(transformed, board_pad_points)
-        scored.append((score, transformed))
-
-    scored.sort(key=lambda item: (item[0], len(item[1])))
-    return scored[0][1] if scored else []
+        key = (score, len(transformed))
+        best_key = (best_score, best_length)
+        if key < best_key:
+            best_variant = (mirror_x, mirror_y)
+            best_score = score
+            best_length = len(transformed)
+    return best_variant
 
 
 def _transform_package_pad_points(
@@ -805,22 +1404,46 @@ def _transform_package_pad_points(
     mirror_y: bool,
 ) -> list[tuple[float, float]]:
     out: list[tuple[float, float]] = []
+    for pad in package.pads:
+        out.append(
+            _transform_package_local_point_to_world(
+                component=component,
+                x_mm=float(pad.at.x_mm),
+                y_mm=float(pad.at.y_mm),
+                origin_x_mm=origin_x_mm,
+                origin_y_mm=origin_y_mm,
+                rotation_deg=rotation_deg,
+                mirror_x=mirror_x,
+                mirror_y=mirror_y,
+            )
+        )
+    return out
+
+
+def _transform_package_local_point_to_world(
+    component,
+    x_mm: float,
+    y_mm: float,
+    origin_x_mm: float,
+    origin_y_mm: float,
+    rotation_deg: float,
+    mirror_x: bool,
+    mirror_y: bool,
+) -> tuple[float, float]:
+    px = float(x_mm)
+    py = float(y_mm)
+    if mirror_x:
+        px = -px
+    if mirror_y:
+        py = -py
+    if component.side == Side.BOTTOM:
+        px = -px
     angle = math.radians(float(rotation_deg or 0.0))
     cos_a = math.cos(angle)
     sin_a = math.sin(angle)
-    for pad in package.pads:
-        px = float(pad.at.x_mm)
-        py = float(pad.at.y_mm)
-        if mirror_x:
-            px = -px
-        if mirror_y:
-            py = -py
-        if component.side == Side.BOTTOM:
-            px = -px
-        rx = px * cos_a - py * sin_a
-        ry = px * sin_a + py * cos_a
-        out.append((float(origin_x_mm) + rx, float(origin_y_mm) + ry))
-    return out
+    rx = px * cos_a - py * sin_a
+    ry = px * sin_a + py * cos_a
+    return float(origin_x_mm) + rx, float(origin_y_mm) + ry
 
 
 def _pad_fit_score(

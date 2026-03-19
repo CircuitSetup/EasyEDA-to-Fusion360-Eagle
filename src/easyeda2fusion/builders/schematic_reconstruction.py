@@ -354,17 +354,25 @@ class SchematicReconstructionBuilder:
             label_size = _coord_for_schematic_output(1.27, use_inch_output)
             lines.append(f"CHANGE SIZE {label_size:.4f};")
             seen_points: set[tuple[float, float, float, float]] = set()
-            adjusted_labels = _dedupe_label_specs(
-                [
-                    (
-                        item.net_name,
-                        item.pick_x_mm,
-                        item.pick_y_mm,
-                        item.label_x_mm,
-                        item.label_y_mm,
-                    )
-                    for item in pending_label_stubs
-                ]
+            label_obstacles = _label_obstacle_points(
+                placement_map=placement_map,
+                anchor_map=anchor_map,
+                component_radii_mm=component_radii,
+            )
+            adjusted_labels = _spread_label_specs(
+                _dedupe_label_specs(
+                    [
+                        (
+                            item.net_name,
+                            item.pick_x_mm,
+                            item.pick_y_mm,
+                            item.label_x_mm,
+                            item.label_y_mm,
+                        )
+                        for item in pending_label_stubs
+                    ]
+                ),
+                occupied_points=label_obstacles,
             )
             emitted_labels: list[tuple[str, float, float, float, float]] = []
             for _net_name, pick_x, pick_y, label_x, label_y in adjusted_labels:
@@ -2246,14 +2254,14 @@ def _label_spec_for_path(path: list[tuple[float, float]]) -> tuple[float, float,
         direction = 1.0 if dx >= 0 else -1.0
         pick_x = end[0] - (0.2 * direction)
         pick_y = end[1]
-        label_x = end[0]
+        label_x = end[0] + (_SCHEMATIC_DEFAULT_GRID_MM * direction)
         label_y = end[1]
     else:
         direction = 1.0 if dy >= 0 else -1.0
         pick_x = end[0]
         pick_y = end[1] - (0.2 * direction)
         label_x = end[0]
-        label_y = end[1]
+        label_y = end[1] + (_SCHEMATIC_DEFAULT_GRID_MM * direction)
 
     return (pick_x, pick_y, label_x, label_y)
 

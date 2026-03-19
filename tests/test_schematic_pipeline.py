@@ -345,7 +345,7 @@ def test_net_attachment_plan_falls_back_to_stub_labels_when_routing_fails() -> N
     assert plan.connected_pin_keys == {("U1", "1"), ("U2", "1")}
 
 
-def test_net_attachment_plan_limits_stub_labels_to_one_per_component_for_same_net() -> None:
+def test_net_attachment_plan_keeps_per_stub_labels_for_same_net_on_one_component() -> None:
     connection_map = [
         _Connection(
             net_name="3V3",
@@ -415,10 +415,9 @@ def test_net_attachment_plan_limits_stub_labels_to_one_per_component_for_same_ne
     net_plan = plan.plans[0]
     assert net_plan.strategy == "stub_labels"
     assert len(net_plan.paths) == 3
-    # U1 has two same-net pins; only one label stub should be retained for U1.
-    assert len(plan.pending_label_stubs) == 2
-    owners = {item.owner_refdes for item in plan.pending_label_stubs}
-    assert owners == {"U1", "U2"}
+    assert len(plan.pending_label_stubs) == 3
+    owner_pin_pairs = {(item.owner_refdes, item.owner_pin) for item in plan.pending_label_stubs}
+    assert owner_pin_pairs == {("U1", "1"), ("U1", "2"), ("U2", "1")}
 
 
 def test_net_attachment_plan_prefers_explicit_path_owner_over_endpoint_sorting() -> None:

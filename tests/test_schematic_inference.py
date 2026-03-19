@@ -183,6 +183,92 @@ def test_inference_falls_back_to_mirrored_local_pad_frame_when_primary_projectio
     assert ("K1", "2") in net_lookup.get("N2", set())
 
 
+def test_inference_prefers_same_component_board_pad_truth_over_mirrored_nearest_net_guess() -> None:
+    project = Project(
+        project_id="p_infer_connector_pad_truth",
+        name="p_infer_connector_pad_truth",
+        source_format=SourceFormat.EASYEDA_STD,
+        input_files=[],
+        components=[
+            Component(
+                refdes="J1",
+                value="",
+                source_name="HDR",
+                package_id="PKG_J",
+                source_instance_id="inst_j1",
+                at=Point(50.0, 50.0),
+            )
+        ],
+        packages=[
+            Package(
+                package_id="PKG_J",
+                name="PKG_J",
+                pads=[
+                    Pad(pad_number="1", at=Point(-3.0, 0.0), shape="rect", width_mm=1.0, height_mm=1.0),
+                    Pad(pad_number="2", at=Point(-1.0, 0.0), shape="rect", width_mm=1.0, height_mm=1.0),
+                    Pad(pad_number="3", at=Point(1.0, 0.0), shape="rect", width_mm=1.0, height_mm=1.0),
+                    Pad(pad_number="4", at=Point(3.0, 0.0), shape="rect", width_mm=1.0, height_mm=1.0),
+                ],
+            )
+        ],
+        nets=[],
+        board=Board(
+            pads=[
+                Pad(
+                    pad_number="1",
+                    at=Point(47.0, 50.0),
+                    shape="rect",
+                    width_mm=1.0,
+                    height_mm=1.0,
+                    net="N1",
+                    component_refdes="J1",
+                    source_instance_id="inst_j1",
+                ),
+                Pad(
+                    pad_number="2",
+                    at=Point(49.0, 50.0),
+                    shape="rect",
+                    width_mm=1.0,
+                    height_mm=1.0,
+                    net=None,
+                    component_refdes="J1",
+                    source_instance_id="inst_j1",
+                ),
+                Pad(
+                    pad_number="3",
+                    at=Point(51.0, 50.0),
+                    shape="rect",
+                    width_mm=1.0,
+                    height_mm=1.0,
+                    net="N3",
+                    component_refdes="J1",
+                    source_instance_id="inst_j1",
+                ),
+                Pad(
+                    pad_number="4",
+                    at=Point(53.0, 50.0),
+                    shape="rect",
+                    width_mm=1.0,
+                    height_mm=1.0,
+                    net=None,
+                    component_refdes="J1",
+                    source_instance_id="inst_j1",
+                ),
+            ]
+        ),
+    )
+
+    infer_schematic_from_board(project, force=True)
+    net_lookup = {net.name: {(node.refdes, node.pin) for node in net.nodes} for net in project.nets}
+
+    assert ("J1", "1") in net_lookup.get("N1", set())
+    assert ("J1", "3") in net_lookup.get("N3", set())
+    assert ("J1", "2") not in net_lookup.get("N1", set())
+    assert ("J1", "2") not in net_lookup.get("N3", set())
+    assert ("J1", "4") not in net_lookup.get("N1", set())
+    assert ("J1", "4") not in net_lookup.get("N3", set())
+
+
 def test_inference_skips_conflicting_pin_net_membership_instead_of_duplication() -> None:
     project = Project(
         project_id="p_infer_reassign",

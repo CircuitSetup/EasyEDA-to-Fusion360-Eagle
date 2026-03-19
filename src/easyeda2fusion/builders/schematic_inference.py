@@ -7,6 +7,21 @@ from easyeda2fusion.builders.net_aliases import build_track_net_aliases
 from easyeda2fusion.model import Net, NetNode, Package, Point, Project, Side, SchematicSheet, Severity, project_event
 
 
+@dataclass(frozen=True)
+class _PadTransformVariant:
+    name: str
+    mirror_x: bool
+    mirror_y: bool
+
+
+_PAD_TRANSFORM_VARIANTS: tuple[_PadTransformVariant, ...] = (
+    _PadTransformVariant("direct", False, False),
+    _PadTransformVariant("mirror_x", True, False),
+    _PadTransformVariant("mirror_y", False, True),
+    _PadTransformVariant("mirror_xy", True, True),
+)
+
+
 @dataclass
 class SchematicInferenceReport:
     inferred: bool = False
@@ -241,7 +256,9 @@ def _infer_board_pin_nodes(project: Project, net_alias: dict[str, str]) -> dict[
         package_lookup[package.package_id] = package
         package_lookup[package.name] = package
 
-    board_pads = [pad for pad in board.pads if str(pad.net or "").strip()]
+    board_pads_all = list(board.pads or [])
+    board_pad_lookup = _build_board_pad_lookup(board_pads_all)
+    board_pads = [pad for pad in board_pads_all if str(pad.net or "").strip()]
     board_vias = [via for via in board.vias if str(via.net or "").strip()]
     board_tracks = [
         track
@@ -264,15 +281,47 @@ def _infer_board_pin_nodes(project: Project, net_alias: dict[str, str]) -> dict[
         if package is None:
             continue
 
+        transform = _select_component_pad_transform(
+            component=component,
+            package=package,
+            board_pad_lookup=board_pad_lookup,
+        )
         for pad in package.pads:
             pad_number = str(pad.pad_number or "").strip()
             if not pad_number:
                 continue
             net_name = ""
-            for world in _component_pad_world_point_candidates(component, pad.at):
+            same_component_board_pads = _same_component_board_pad_candidates(
+                component=component,
+                pad_number=pad_number,
+                board_pad_lookup=board_pad_lookup,
+            )
+            if same_component_board_pads:
+                matched_board_pad = _best_matching_board_pad(
+                    component=component,
+                    pad_point=pad.at,
+                    board_pad_candidates=same_component_board_pads,
+                    transform=transform,
+                )
+                matched_board_net = _canonical_net_name(matched_board_pad.net, net_alias)
+                if matched_board_net:
+                    net_name = matched_board_net
+                else:
+                    direct_world = _component_pad_world_point(component, pad.at)
+                    net_name = _closest_board_copper_touch(
+                        world=direct_world,
+                        board_vias=board_vias,
+                        board_tracks=board_tracks,
+                        net_alias=net_alias,
+                    )
+            else:
+                world = _component_pad_world_point(
+                    component,
+                    pad.at,
+                    mirror_x=transform.mirror_x,
+                    mirror_y=transform.mirror_y,
+                )
                 net_name = _closest_board_net(world, board_pads, board_vias, board_tracks, net_alias)
-                if net_name:
-                    break
             if not net_name:
                 continue
             dedupe_key = (net_name, refdes, pad_number)
@@ -331,6 +380,145 @@ def _component_pad_world_point_candidates(component, pad_point: Point) -> list[P
     return unique
 
 
+def _build_board_pad_lookup(board_pads: list) -> dict[str, dict[tuple[str, ...], list]]:
+    by_ref_source_pad: dict[tuple[str, str, str], list] = {}
+    by_ref_pad: dict[tuple[str, str], list] = {}
+    by_source_pad: dict[tuple[str, str], list] = {}
+    by_pad: dict[str, list] = {}
+
+    for pad in board_pads:
+        refdes = str(getattr(pad, "component_refdes", "") or "").strip()
+        source_id = str(getattr(pad, "source_instance_id", "") or "").strip()
+        pad_number = str(getattr(pad, "pad_number", "") or "").strip()
+        if not pad_number:
+            continue
+        if refdes:
+            by_ref_pad.setdefault((refdes, pad_number), []).append(pad)
+            if source_id:
+                by_ref_source_pad.setdefault((refdes, source_id, pad_number), []).append(pad)
+        if source_id:
+            by_source_pad.setdefault((source_id, pad_number), []).append(pad)
+        by_pad.setdefault(pad_number, []).append(pad)
+
+    return {
+        "by_ref_source_pad": by_ref_source_pad,
+        "by_ref_pad": by_ref_pad,
+        "by_source_pad": by_source_pad,
+        "by_pad": by_pad,
+    }
+
+
+def _same_component_board_pad_candidates(
+    component,
+    pad_number: str,
+    board_pad_lookup: dict[str, dict[tuple[str, ...], list]],
+) -> list:
+    refdes = str(getattr(component, "refdes", "") or "").strip()
+    source_id = str(getattr(component, "source_instance_id", "") or "").strip()
+
+    out: list = []
+    seen: set[int] = set()
+
+    def _append(items: list | None) -> None:
+        for item in items or []:
+            marker = id(item)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            out.append(item)
+
+    if refdes and source_id:
+        _append(board_pad_lookup["by_ref_source_pad"].get((refdes, source_id, pad_number)))
+    if refdes:
+        _append(board_pad_lookup["by_ref_pad"].get((refdes, pad_number)))
+    if not out and source_id:
+        _append(board_pad_lookup["by_source_pad"].get((source_id, pad_number)))
+    return out
+
+
+def _candidate_transform_board_pads(
+    component,
+    pad_number: str,
+    board_pad_lookup: dict[str, dict[tuple[str, ...], list]],
+) -> list:
+    same_component = _same_component_board_pad_candidates(component, pad_number, board_pad_lookup)
+    if same_component:
+        return same_component
+    return list(board_pad_lookup["by_pad"].get(pad_number, ()))
+
+
+def _select_component_pad_transform(
+    component,
+    package: Package,
+    board_pad_lookup: dict[str, dict[tuple[str, ...], list]],
+) -> _PadTransformVariant:
+    best_variant = _PAD_TRANSFORM_VARIANTS[0]
+    best_score: tuple[int, float, int] | None = None
+
+    for ordinal, variant in enumerate(_PAD_TRANSFORM_VARIANTS):
+        matched_count = 0
+        total_distance = 0.0
+        for pad in package.pads:
+            pad_number = str(getattr(pad, "pad_number", "") or "").strip()
+            if not pad_number:
+                continue
+            candidates = _candidate_transform_board_pads(component, pad_number, board_pad_lookup)
+            if not candidates:
+                continue
+            world = _component_pad_world_point(
+                component,
+                pad.at,
+                mirror_x=variant.mirror_x,
+                mirror_y=variant.mirror_y,
+            )
+            nearest = min(
+                (
+                    math.hypot(
+                        float(world.x_mm) - float(candidate.at.x_mm),
+                        float(world.y_mm) - float(candidate.at.y_mm),
+                    )
+                    for candidate in candidates
+                ),
+                default=None,
+            )
+            if nearest is None:
+                continue
+            if nearest <= 0.35:
+                matched_count += 1
+                total_distance += nearest
+        score = (-matched_count, total_distance, ordinal)
+        if best_score is None or score < best_score:
+            best_score = score
+            best_variant = variant
+    return best_variant
+
+
+def _best_matching_board_pad(
+    component,
+    pad_point: Point,
+    board_pad_candidates: list,
+    transform: _PadTransformVariant,
+):
+    expected = _component_pad_world_point(
+        component,
+        pad_point,
+        mirror_x=transform.mirror_x,
+        mirror_y=transform.mirror_y,
+    )
+    return min(
+        board_pad_candidates,
+        key=lambda candidate: (
+            math.hypot(
+                float(expected.x_mm) - float(candidate.at.x_mm),
+                float(expected.y_mm) - float(candidate.at.y_mm),
+            ),
+            round(float(candidate.at.x_mm), 6),
+            round(float(candidate.at.y_mm), 6),
+            str(getattr(candidate, "net", "") or ""),
+        ),
+    )
+
+
 def _closest_board_net(world: Point, board_pads, board_vias, board_tracks, net_alias: dict[str, str]) -> str:
     x = float(world.x_mm)
     y = float(world.y_mm)
@@ -375,6 +563,42 @@ def _closest_board_net(world: Point, board_pads, board_vias, board_tracks, net_a
             float(track.end.y_mm),
         )
         if distance <= track_tol and (best_track is None or distance < best_track[0]):
+            best_track = (distance, track_net)
+    if best_track is not None:
+        return best_track[1]
+
+    return ""
+
+
+def _closest_board_copper_touch(world: Point, board_vias, board_tracks, net_alias: dict[str, str]) -> str:
+    x = float(world.x_mm)
+    y = float(world.y_mm)
+
+    best_via: tuple[float, str] | None = None
+    for via in board_vias:
+        via_net = _canonical_net_name(via.net, net_alias)
+        if not via_net:
+            continue
+        dist = math.hypot(x - float(via.at.x_mm), y - float(via.at.y_mm))
+        if dist <= 0.10 and (best_via is None or dist < best_via[0]):
+            best_via = (dist, via_net)
+    if best_via is not None:
+        return best_via[1]
+
+    best_track: tuple[float, str] | None = None
+    for track in board_tracks:
+        track_net = _canonical_net_name(track.net, net_alias)
+        if not track_net:
+            continue
+        distance = _distance_point_to_segment(
+            x,
+            y,
+            float(track.start.x_mm),
+            float(track.start.y_mm),
+            float(track.end.x_mm),
+            float(track.end.y_mm),
+        )
+        if distance <= 0.10 and (best_track is None or distance < best_track[0]):
             best_track = (distance, track_net)
     if best_track is not None:
         return best_track[1]

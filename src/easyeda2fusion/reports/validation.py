@@ -420,6 +420,37 @@ def validate_project(
             {"ownerless_label_stub_count": ownerless_label_stub_count},
         )
 
+    board_anchor_records = (
+        project.metadata.get("board_trace_pad_anchors", [])
+        if isinstance(project.metadata, dict)
+        else []
+    )
+    if not isinstance(board_anchor_records, list):
+        board_anchor_records = []
+    board_anchor_count = int(
+        project.metadata.get("board_trace_pad_anchor_count", len(board_anchor_records))
+        if isinstance(project.metadata, dict)
+        else len(board_anchor_records)
+    )
+    unresolved_board_touches = (
+        project.metadata.get("board_trace_pad_touch_unresolved", [])
+        if isinstance(project.metadata, dict)
+        else []
+    )
+    if not isinstance(unresolved_board_touches, list):
+        unresolved_board_touches = []
+    unresolved_board_touch_count = int(
+        project.metadata.get("board_trace_pad_touch_unresolved_count", len(unresolved_board_touches))
+        if isinstance(project.metadata, dict)
+        else len(unresolved_board_touches)
+    )
+    if unresolved_board_touch_count > 0:
+        add_manual_review(
+            "BOARD_TRACE_PAD_TOUCH_UNRESOLVED",
+            f"Board trace-to-pad unresolved near_touch_count={unresolved_board_touch_count}",
+            {"unresolved_near_touch_count": unresolved_board_touch_count},
+        )
+
     for layer_name in lossy_layers:
         issues.append(
             ValidationIssue(
@@ -457,6 +488,31 @@ def validate_project(
                 context={"item": item},
             )
         )
+    for item in unresolved_board_touches[:25]:
+        if not isinstance(item, dict):
+            continue
+        issues.append(
+            ValidationIssue(
+                severity="warning",
+                code="BOARD_TRACE_PAD_TOUCH_UNRESOLVED",
+                message=(
+                    "Board trace endpoint near same-net pad without explicit anchor: "
+                    f"{item.get('target_refdes', '?')}:{item.get('target_pad', '?')}"
+                ),
+                context={
+                    "net_name": str(item.get("net_name") or ""),
+                    "track_layer": str(item.get("track_layer") or ""),
+                    "endpoint": str(item.get("endpoint") or ""),
+                    "track_endpoint_x_mm": float(item.get("track_endpoint_x_mm", 0.0) or 0.0),
+                    "track_endpoint_y_mm": float(item.get("track_endpoint_y_mm", 0.0) or 0.0),
+                    "target_refdes": str(item.get("target_refdes") or ""),
+                    "target_pad": str(item.get("target_pad") or ""),
+                    "target_center_x_mm": float(item.get("target_center_x_mm", 0.0) or 0.0),
+                    "target_center_y_mm": float(item.get("target_center_y_mm", 0.0) or 0.0),
+                    "target_authoritative": bool(item.get("target_authoritative", False)),
+                },
+            )
+        )
     issues.extend(manual_review_issues)
     issues = _dedupe_validation_issues(issues)
     manual_review_items = sorted({issue.message for issue in manual_review_issues})
@@ -482,6 +538,8 @@ def validate_project(
             "board_track_count": len(project.board.tracks) if project.board else 0,
             "board_via_count": len(project.board.vias) if project.board else 0,
             "board_pad_count": len(project.board.pads) if project.board else 0,
+            "board_trace_pad_anchor_count": board_anchor_count,
+            "board_trace_pad_touch_unresolved_count": unresolved_board_touch_count,
             "source_component_instance_count": source_instance_total,
             "placed_component_instance_count": placed_instance_total,
             "board_emitted_component_instance_count": placed_instance_total,

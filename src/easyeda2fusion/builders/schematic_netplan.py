@@ -228,7 +228,6 @@ def build_net_attachment_plan(
 
         power_key = normalize_power_net_name(net_name)
         path_endpoint_refs = _path_endpoint_refdes_index(mapped_nodes, point_key)
-        labeled_component_keys: set[tuple[str, str]] = set()
         path_items: list[NetAttachmentPath] = []
         for raw_path in net_paths:
             candidate = _coerce_planned_path(raw_path)
@@ -255,12 +254,6 @@ def build_net_attachment_plan(
                         path_endpoint_refs,
                         point_key,
                     )
-                    if owner_refdes:
-                        label_component_key = (_normalize_net_name(net_name), owner_refdes)
-                        if label_component_key in labeled_component_keys:
-                            label_owner_collision_count += 1
-                            continue
-                        labeled_component_keys.add(label_component_key)
                     pending_label_stubs.append(
                         PlannedLabelStub(
                             net_name=net_name,

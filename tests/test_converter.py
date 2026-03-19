@@ -287,6 +287,79 @@ def test_validation_report_uses_emitted_instance_metadata() -> None:
     assert mismatch.context.get("missing_component_keys") == ["U2::IDX2"]
 
 
+def test_validation_report_includes_board_trace_pad_anchor_metrics_and_unresolved_touches() -> None:
+    project = Project(
+        project_id="p_validation_board_anchor_metrics",
+        name="p_validation_board_anchor_metrics",
+        source_format=SourceFormat.EASYEDA_STD,
+        input_files=[],
+        symbols=[
+            Symbol(
+                symbol_id="SYM",
+                name="SYM",
+                pins=[SymbolPin(pin_number="1", pin_name="1", at=Point(0.0, 0.0))],
+            )
+        ],
+        devices=[
+            Device(
+                device_id="DEV",
+                name="DEV",
+                symbol_id="SYM",
+                package_id="PKG",
+                pin_pad_map={"1": "1"},
+            )
+        ],
+        packages=[
+            Package(
+                package_id="PKG",
+                name="PKG",
+                pads=[Pad(pad_number="1", at=Point(0.0, 0.0), shape="rect", width_mm=1.0, height_mm=1.0)],
+            )
+        ],
+        components=[
+            Component(
+                refdes="U1",
+                value="",
+                source_name="U",
+                device_id="DEV",
+                package_id="PKG",
+                symbol_id="SYM",
+                at=Point(0.0, 0.0),
+            )
+        ],
+        nets=[Net(name="SIG", nodes=[NetNode(refdes="U1", pin="1")])],
+        board=Board(),
+        metadata={
+            "board_trace_pad_anchor_count": 2,
+            "board_trace_pad_touch_unresolved_count": 1,
+            "board_trace_pad_touch_unresolved": [
+                {
+                    "net_name": "SIG",
+                    "track_layer": "1",
+                    "endpoint": "start",
+                    "track_endpoint_x_mm": 10.45,
+                    "track_endpoint_y_mm": 10.0,
+                    "target_refdes": "U1",
+                    "target_pad": "1",
+                    "target_center_x_mm": 10.0,
+                    "target_center_y_mm": 10.0,
+                    "target_authoritative": True,
+                }
+            ],
+        },
+    )
+
+    report = validate_project(project, MatchContext(), None)
+
+    assert report.metrics["board_trace_pad_anchor_count"] == 2
+    assert report.metrics["board_trace_pad_touch_unresolved_count"] == 1
+    assert "Board trace-to-pad unresolved near_touch_count=1" in report.manual_review_items
+    unresolved_issue = next(issue for issue in report.issues if issue.code == "BOARD_TRACE_PAD_TOUCH_UNRESOLVED")
+    assert unresolved_issue.context["target_refdes"] == "U1"
+    assert unresolved_issue.context["target_pad"] == "1"
+    assert unresolved_issue.context["net_name"] == "SIG"
+
+
 def test_multilayer_board_layer_mapping(fixtures_dir):
     parsed = parse_easyeda_files([fixtures_dir / "pro_multilayer_board.json"])
     normalization = Normalizer().normalize(parsed)

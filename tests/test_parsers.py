@@ -122,6 +122,41 @@ def test_standard_legacy_lib_local_package_frame_is_rotation_consistent(tmp_path
         assert float(pads["1"]["x"]) < float(pads["2"]["x"])
 
 
+def test_standard_legacy_lib_preserves_local_footprint_holes(tmp_path):
+    payload = {
+        "head": {"docType": "3", "x": "0", "y": "0"},
+        "shape": [
+            (
+                "LIB~100~100~package`TF-SMD_TF-012`spicePre`TF`~0~~gge_tf1~1~pkg_tf1~0~~yes~~"
+                "#@$PAD~RECT~98~100~8~8~1~N1~1~2~~0~gge_p1~4~~Y~0~0~0.2~98,100"
+                "#@$HOLE~102~101~3~gge_h1"
+            ),
+            (
+                "LIB~200~200~package`TF-SMD_TF-012-ROT`spicePre`TF`~90~~gge_tf2~1~pkg_tf2~0~~yes~~"
+                "#@$PAD~RECT~200~198~8~8~1~N1~1~2~~90~gge_p2~4~~Y~0~0~0.2~200,198"
+                "#@$HOLE~200~202~4~gge_h2"
+            ),
+        ],
+    }
+    path = tmp_path / "legacy_lib_holes.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    parsed = parse_easyeda_files([path])
+    project = Normalizer().normalize(parsed).project
+
+    pkg_plain = next(pkg for pkg in project.packages if pkg.package_id == "TF-SMD_TF-012")
+    hole_plain = next(item for item in pkg_plain.outline if item.get("kind") == "hole")
+    assert abs(float(hole_plain["x_mm"]) - 0.508) < 1e-6
+    assert abs(float(hole_plain["y_mm"]) - 0.254) < 1e-6
+    assert abs(float(hole_plain["drill_mm"]) - 0.762) < 1e-6
+
+    pkg_rot = next(pkg for pkg in project.packages if pkg.package_id == "TF-SMD_TF-012-ROT")
+    hole_rot = next(item for item in pkg_rot.outline if item.get("kind") == "hole")
+    assert abs(float(hole_rot["x_mm"]) + 0.508) < 1e-6
+    assert abs(float(hole_rot["y_mm"]) - 0.0) < 1e-6
+    assert abs(float(hole_rot["drill_mm"]) - 1.016) < 1e-6
+
+
 def test_normalizer_mirrors_legacy_package_frame_when_component_pad_fit_requires_it():
     parsed = ParsedSource(
         source_format=SourceFormat.EASYEDA_STD,

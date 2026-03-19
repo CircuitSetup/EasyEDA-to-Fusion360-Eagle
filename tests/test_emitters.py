@@ -1119,6 +1119,456 @@ def test_board_builder_skips_signal_commands_when_schematic_exists() -> None:
     assert any(line.startswith("WIRE 'N1' 0.2500 (10.0000 10.0000) (20.0000 10.0000);") for line in lines)
 
 
+def test_board_builder_emits_same_net_pad_anchor_for_touching_smd_endpoint() -> None:
+    project = Project(
+        project_id="p_board_pad_anchor",
+        name="p_board_pad_anchor",
+        source_format=SourceFormat.EASYEDA_STD,
+        input_files=[],
+        components=[
+            Component(
+                refdes="U1",
+                value="",
+                source_name="U",
+                device_id="DEV_U1",
+                package_id="PKG_U1",
+                at=Point(10.0, 10.0),
+            )
+        ],
+        packages=[
+            Package(
+                package_id="PKG_U1",
+                name="PKG_U1",
+                pads=[
+                    Pad(
+                        pad_number="1",
+                        at=Point(0.0, 0.0),
+                        shape="rect",
+                        width_mm=1.0,
+                        height_mm=1.0,
+                        layer="top_copper",
+                    )
+                ],
+            )
+        ],
+        board=Board(
+            pads=[
+                Pad(
+                    pad_number="1",
+                    at=Point(10.0, 10.0),
+                    shape="rect",
+                    width_mm=1.0,
+                    height_mm=1.0,
+                    layer="top_copper",
+                    net="N1",
+                    component_refdes="U1",
+                )
+            ],
+            tracks=[
+                Track(
+                    start=Point(10.45, 10.0),
+                    end=Point(20.0, 10.0),
+                    width_mm=0.25,
+                    layer="top_copper",
+                    net="N1",
+                )
+            ],
+        ),
+    )
+
+    lines = BoardReconstructionBuilder().build_commands(project)
+    assert any(line == "WIRE 'N1' 0.2500 (10.4500 10.0000) (20.0000 10.0000);" for line in lines)
+    assert any(line == "WIRE 'N1' 0.2500 (10.0000 10.0000) (10.4500 10.0000);" for line in lines)
+    assert project.metadata["board_trace_pad_anchor_count"] == 1
+    assert project.metadata["board_trace_pad_touch_unresolved_count"] == 0
+
+
+def test_board_builder_emits_pad_anchor_when_trace_width_overlaps_pad_edge() -> None:
+    project = Project(
+        project_id="p_board_pad_anchor_trace_width",
+        name="p_board_pad_anchor_trace_width",
+        source_format=SourceFormat.EASYEDA_STD,
+        input_files=[],
+        components=[
+            Component(
+                refdes="U1",
+                value="",
+                source_name="U",
+                device_id="DEV_U1",
+                package_id="PKG_U1",
+                at=Point(10.0, 10.0),
+            )
+        ],
+        packages=[
+            Package(
+                package_id="PKG_U1",
+                name="PKG_U1",
+                pads=[
+                    Pad(
+                        pad_number="1",
+                        at=Point(0.0, 0.0),
+                        shape="rect",
+                        width_mm=1.0,
+                        height_mm=1.0,
+                        layer="top_copper",
+                    )
+                ],
+            )
+        ],
+        board=Board(
+            pads=[
+                Pad(
+                    pad_number="1",
+                    at=Point(10.0, 10.0),
+                    shape="rect",
+                    width_mm=1.0,
+                    height_mm=1.0,
+                    layer="top_copper",
+                    net="N1",
+                    component_refdes="U1",
+                )
+            ],
+            tracks=[
+                Track(
+                    start=Point(10.65, 10.0),
+                    end=Point(20.0, 10.0),
+                    width_mm=0.25,
+                    layer="top_copper",
+                    net="N1",
+                )
+            ],
+        ),
+    )
+
+    lines = BoardReconstructionBuilder().build_commands(project)
+    assert any(line == "WIRE 'N1' 0.2500 (10.6500 10.0000) (20.0000 10.0000);" for line in lines)
+    assert any(line == "WIRE 'N1' 0.2500 (10.0000 10.0000) (10.6500 10.0000);" for line in lines)
+    assert project.metadata["board_trace_pad_anchor_count"] == 1
+    assert project.metadata["board_trace_pad_touch_unresolved_count"] == 0
+
+
+def test_board_builder_skips_duplicate_anchor_when_source_track_already_spans_pad_center() -> None:
+    project = Project(
+        project_id="p_board_pad_anchor_duplicate_track",
+        name="p_board_pad_anchor_duplicate_track",
+        source_format=SourceFormat.EASYEDA_STD,
+        input_files=[],
+        components=[
+            Component(
+                refdes="U1",
+                value="",
+                source_name="U",
+                device_id="DEV_U1",
+                package_id="PKG_U1",
+                at=Point(10.0, 10.0),
+            )
+        ],
+        packages=[
+            Package(
+                package_id="PKG_U1",
+                name="PKG_U1",
+                pads=[
+                    Pad(
+                        pad_number="1",
+                        at=Point(0.0, 0.0),
+                        shape="rect",
+                        width_mm=1.0,
+                        height_mm=1.0,
+                        layer="top_copper",
+                    )
+                ],
+            )
+        ],
+        board=Board(
+            pads=[
+                Pad(
+                    pad_number="1",
+                    at=Point(10.0, 10.0),
+                    shape="rect",
+                    width_mm=1.0,
+                    height_mm=1.0,
+                    layer="top_copper",
+                    net="N1",
+                    component_refdes="U1",
+                )
+            ],
+            tracks=[
+                Track(
+                    start=Point(10.0, 10.0),
+                    end=Point(10.45, 10.0),
+                    width_mm=0.25,
+                    layer="top_copper",
+                    net="N1",
+                )
+            ],
+        ),
+    )
+
+    lines = BoardReconstructionBuilder().build_commands(project)
+    assert lines.count("WIRE 'N1' 0.2500 (10.0000 10.0000) (10.4500 10.0000);") == 1
+    assert project.metadata["board_trace_pad_anchor_count"] == 0
+    assert project.metadata["board_trace_pad_touch_unresolved_count"] == 0
+
+
+def test_board_builder_skips_duplicate_source_track_when_anchor_emitted_first() -> None:
+    project = Project(
+        project_id="p_board_pad_anchor_duplicate_order",
+        name="p_board_pad_anchor_duplicate_order",
+        source_format=SourceFormat.EASYEDA_STD,
+        input_files=[],
+        components=[
+            Component(
+                refdes="U1",
+                value="",
+                source_name="U",
+                device_id="DEV_U1",
+                package_id="PKG_U1",
+                at=Point(10.0, 10.0),
+            )
+        ],
+        packages=[
+            Package(
+                package_id="PKG_U1",
+                name="PKG_U1",
+                pads=[
+                    Pad(
+                        pad_number="1",
+                        at=Point(0.0, 0.0),
+                        shape="rect",
+                        width_mm=1.0,
+                        height_mm=1.0,
+                        layer="top_copper",
+                    )
+                ],
+            )
+        ],
+        board=Board(
+            pads=[
+                Pad(
+                    pad_number="1",
+                    at=Point(10.0, 10.0),
+                    shape="rect",
+                    width_mm=1.0,
+                    height_mm=1.0,
+                    layer="top_copper",
+                    net="N1",
+                    component_refdes="U1",
+                )
+            ],
+            tracks=[
+                Track(
+                    start=Point(10.45, 10.0),
+                    end=Point(20.0, 10.0),
+                    width_mm=0.25,
+                    layer="top_copper",
+                    net="N1",
+                ),
+                Track(
+                    start=Point(10.0, 10.0),
+                    end=Point(10.45, 10.0),
+                    width_mm=0.25,
+                    layer="top_copper",
+                    net="N1",
+                ),
+            ],
+        ),
+    )
+
+    lines = BoardReconstructionBuilder().build_commands(project)
+    assert lines.count("WIRE 'N1' 0.2500 (10.0000 10.0000) (10.4500 10.0000);") == 1
+    assert project.metadata["board_trace_pad_anchor_count"] == 1
+    assert project.metadata["board_trace_pad_touch_unresolved_count"] == 0
+
+
+def test_board_builder_skips_pad_anchor_when_track_is_already_center_connected() -> None:
+    project = Project(
+        project_id="p_board_pad_anchor_centered",
+        name="p_board_pad_anchor_centered",
+        source_format=SourceFormat.EASYEDA_STD,
+        input_files=[],
+        components=[
+            Component(
+                refdes="U1",
+                value="",
+                source_name="U",
+                device_id="DEV_U1",
+                package_id="PKG_U1",
+                at=Point(10.0, 10.0),
+            )
+        ],
+        packages=[
+            Package(
+                package_id="PKG_U1",
+                name="PKG_U1",
+                pads=[
+                    Pad(
+                        pad_number="1",
+                        at=Point(0.0, 0.0),
+                        shape="rect",
+                        width_mm=1.0,
+                        height_mm=1.0,
+                        layer="top_copper",
+                    )
+                ],
+            )
+        ],
+        board=Board(
+            pads=[
+                Pad(
+                    pad_number="1",
+                    at=Point(10.0, 10.0),
+                    shape="rect",
+                    width_mm=1.0,
+                    height_mm=1.0,
+                    layer="top_copper",
+                    net="N1",
+                    component_refdes="U1",
+                )
+            ],
+            tracks=[
+                Track(
+                    start=Point(10.0, 10.0),
+                    end=Point(20.0, 10.0),
+                    width_mm=0.25,
+                    layer="top_copper",
+                    net="N1",
+                )
+            ],
+        ),
+    )
+
+    lines = BoardReconstructionBuilder().build_commands(project)
+    assert lines.count("WIRE 'N1' 0.2500 (10.0000 10.0000) (20.0000 10.0000);") == 1
+    assert project.metadata["board_trace_pad_anchor_count"] == 0
+    assert project.metadata["board_trace_pad_touch_unresolved_count"] == 0
+
+
+def test_board_builder_skips_pad_anchor_for_mismatched_net_touch() -> None:
+    project = Project(
+        project_id="p_board_pad_anchor_mismatch",
+        name="p_board_pad_anchor_mismatch",
+        source_format=SourceFormat.EASYEDA_STD,
+        input_files=[],
+        components=[
+            Component(
+                refdes="U1",
+                value="",
+                source_name="U",
+                device_id="DEV_U1",
+                package_id="PKG_U1",
+                at=Point(10.0, 10.0),
+            )
+        ],
+        packages=[
+            Package(
+                package_id="PKG_U1",
+                name="PKG_U1",
+                pads=[
+                    Pad(
+                        pad_number="1",
+                        at=Point(0.0, 0.0),
+                        shape="rect",
+                        width_mm=1.0,
+                        height_mm=1.0,
+                        layer="top_copper",
+                    )
+                ],
+            )
+        ],
+        board=Board(
+            pads=[
+                Pad(
+                    pad_number="1",
+                    at=Point(10.0, 10.0),
+                    shape="rect",
+                    width_mm=1.0,
+                    height_mm=1.0,
+                    layer="top_copper",
+                    net="GND",
+                    component_refdes="U1",
+                )
+            ],
+            tracks=[
+                Track(
+                    start=Point(10.45, 10.0),
+                    end=Point(20.0, 10.0),
+                    width_mm=0.25,
+                    layer="top_copper",
+                    net="N1",
+                )
+            ],
+        ),
+    )
+
+    lines = BoardReconstructionBuilder().build_commands(project)
+    assert lines.count("WIRE 'N1' 0.2500 (10.4500 10.0000) (20.0000 10.0000);") == 1
+    assert project.metadata["board_trace_pad_anchor_count"] == 0
+    assert project.metadata["board_trace_pad_touch_unresolved_count"] == 0
+
+
+def test_board_builder_skips_pad_anchor_on_non_copper_layer() -> None:
+    project = Project(
+        project_id="p_board_pad_anchor_non_copper",
+        name="p_board_pad_anchor_non_copper",
+        source_format=SourceFormat.EASYEDA_STD,
+        input_files=[],
+        components=[
+            Component(
+                refdes="U1",
+                value="",
+                source_name="U",
+                device_id="DEV_U1",
+                package_id="PKG_U1",
+                at=Point(10.0, 10.0),
+            )
+        ],
+        packages=[
+            Package(
+                package_id="PKG_U1",
+                name="PKG_U1",
+                pads=[
+                    Pad(
+                        pad_number="1",
+                        at=Point(0.0, 0.0),
+                        shape="rect",
+                        width_mm=1.0,
+                        height_mm=1.0,
+                        layer="top_copper",
+                    )
+                ],
+            )
+        ],
+        board=Board(
+            pads=[
+                Pad(
+                    pad_number="1",
+                    at=Point(10.0, 10.0),
+                    shape="rect",
+                    width_mm=1.0,
+                    height_mm=1.0,
+                    layer="top_copper",
+                    net="N1",
+                    component_refdes="U1",
+                )
+            ],
+            tracks=[
+                Track(
+                    start=Point(10.45, 10.0),
+                    end=Point(20.0, 10.0),
+                    width_mm=0.25,
+                    layer="3",
+                    net="N1",
+                )
+            ],
+        ),
+    )
+
+    lines = BoardReconstructionBuilder().build_commands(project)
+    assert lines.count("WIRE 0.3000 (10.4500 10.0000) (20.0000 10.0000);") == 1
+    assert project.metadata["board_trace_pad_anchor_count"] == 0
+    assert project.metadata["board_trace_pad_touch_unresolved_count"] == 0
+
+
 def test_board_builder_maps_numeric_pro_layers() -> None:
     project = Project(
         project_id="p1",
@@ -2434,11 +2884,26 @@ def test_schematic_builder_limits_power_labels_to_one_per_component_on_same_net(
 
     # Keep per-pin stubs for electrical connectivity.
     assert len(net_lines) == 3
-    # Do not emit repeated same-net labels for multiple pins on one component.
-    assert len(label_lines) == 2
+    # Emit one label per visible stub, including same-net pins on one component.
+    assert len(label_lines) == 3
     pending = project.metadata.get("schematic_net_attachment_plan", {}).get("pending_label_stubs", [])
-    owners = {item.get("owner_refdes") for item in pending if isinstance(item, dict)}
-    assert owners == {"U1", "U2"}
+    owner_pin_pairs = {
+        (item.get("owner_refdes"), item.get("owner_pin"))
+        for item in pending
+        if isinstance(item, dict)
+    }
+    assert owner_pin_pairs == {("U1", "1"), ("U1", "2"), ("U2", "1")}
+
+    label_positions: list[tuple[float, float]] = []
+    for line in label_lines:
+        parts = line.split("(")
+        pick_tokens = parts[1].split(")")[0].strip().split()
+        label_tokens = parts[2].split(")")[0].strip().split()
+        pick_point = (round(float(pick_tokens[0]), 4), round(float(pick_tokens[1]), 4))
+        label_point = (round(float(label_tokens[0]), 4), round(float(label_tokens[1]), 4))
+        assert label_point != pick_point
+        label_positions.append(label_point)
+    assert len(label_positions) == len(set(label_positions))
 
 
 def test_schematic_builder_avoids_duplicate_power_labels_for_fallback_stub_paths() -> None:
@@ -2489,6 +2954,18 @@ def test_dedupe_label_specs_keeps_single_label_per_net_pick_point() -> None:
     assert len(deduped) == 2
     assert deduped[0][:3] == ("3V3", 10.0, 20.0)
     assert deduped[1][:3] == ("VIN", 10.0, 20.0)
+
+
+def test_label_spec_offsets_label_beyond_terminal_segment_direction() -> None:
+    horizontal = _label_spec_for_path([(10.0, 10.0), (11.27, 10.0)])
+    vertical = _label_spec_for_path([(5.0, 5.0), (5.0, 6.27)])
+
+    assert horizontal == (11.07, 10.0, 12.54, 10.0)
+    assert vertical is not None
+    assert abs(vertical[0] - 5.0) < 1e-6
+    assert abs(vertical[1] - 6.07) < 1e-6
+    assert abs(vertical[2] - 5.0) < 1e-6
+    assert abs(vertical[3] - 7.54) < 1e-6
 
 
 def test_schematic_builder_repositions_overlapping_parts() -> None:
@@ -3869,12 +4346,12 @@ def test_spread_label_specs_avoids_component_and_pin_obstacles() -> None:
             assert (dx * dx + dy * dy) ** 0.5 >= 2.0
 
 
-def test_label_spec_places_label_at_path_end() -> None:
+def test_label_spec_places_label_beyond_path_end() -> None:
     spec = _label_spec_for_path([(0.0, 0.0), (5.0, 0.0), (5.0, 3.0)])
     assert spec is not None
     pick_x, pick_y, label_x, label_y = spec
     assert abs(label_x - 5.0) < 1e-6
-    assert abs(label_y - 3.0) < 1e-6
+    assert abs(label_y - 4.27) < 1e-6
     assert abs(pick_x - 5.0) < 1e-6
     assert 2.7 <= pick_y <= 2.9
 

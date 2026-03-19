@@ -469,6 +469,17 @@ class EasyEDAStdParser(EasyEDAParser):
                     package_outline.append(outline_track)
                 continue
 
+            if kind == "HOLE":
+                outline_hole = _hole_to_local_outline(
+                    child_parts=child_parts,
+                    origin_x=component_x,
+                    origin_y=component_y,
+                    rotation_deg=component_rotation,
+                )
+                if outline_hole is not None:
+                    package_outline.append(outline_hole)
+                continue
+
         refdes = _first_non_empty(
             _attr_lookup(attributes, "Designator", "pre", "Ref", "Reference"),
             *text_refdes_candidates,
@@ -840,6 +851,34 @@ def _text_to_local_outline(
     if size_mm is not None:
         item["size_mm"] = max(_safe_float(size_mm, size_local), 0.2)
     return item
+
+
+def _hole_to_local_outline(
+    child_parts: list[str],
+    origin_x: float,
+    origin_y: float,
+    rotation_deg: float,
+) -> dict[str, Any] | None:
+    if len(child_parts) < 4:
+        return None
+    x = _safe_float(_token(child_parts, 1), 0.0)
+    y = _safe_float(_token(child_parts, 2), 0.0)
+    drill = max(_safe_float(_token(child_parts, 3), 0.0), 0.0)
+    if drill <= 0.0:
+        return None
+    lx, ly = _localize_point(
+        x=x,
+        y=y,
+        origin_x=origin_x,
+        origin_y=origin_y,
+        rotation_deg=rotation_deg,
+    )
+    return {
+        "kind": "hole",
+        "x_local": lx,
+        "y_local": ly,
+        "drill_local": drill,
+    }
 
 
 def _localize_points(
